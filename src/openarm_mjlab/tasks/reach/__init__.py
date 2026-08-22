@@ -12,7 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OpenArm task registrations. Importing this package registers all tasks."""
+"""OpenArm reach task."""
 
-from . import pick_place  # noqa: F401
-from . import reach  # noqa: F401
+from mjlab.tasks.manipulation.rl import ManipulationOnPolicyRunner
+from mjlab.tasks.registry import register_mjlab_task
+
+from .reach_env_cfg import openarm_reach_env_cfg
+from .rl_cfg import openarm_reach_ppo_runner_cfg
+
+register_mjlab_task(
+    task_id="OpenArm-Reach",
+    env_cfg=openarm_reach_env_cfg(),
+    play_env_cfg=openarm_reach_env_cfg(play=True),
+    rl_cfg=openarm_reach_ppo_runner_cfg(),
+    runner_cls=ManipulationOnPolicyRunner,
+)
