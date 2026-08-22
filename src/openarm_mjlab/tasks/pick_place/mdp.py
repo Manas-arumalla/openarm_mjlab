@@ -1,0 +1,159 @@
+# Copyright 2026 Enactic, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""MDP terms for the OpenArm pick & place task."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import torch
+
+from mjlab.managers.scene_entity_config import SceneEntityCfg
+
+if TYPE_CHECKING:
+    from mjlab.entity import Entity
+    from mjlab.envs import ManagerBasedRlEnv
+
+# _target_pos_w is on the hot path (2 observation terms + the transport
+# reward each step); cache the constant offset tensor per (value, device)
+# instead of re-allocating and re-uploading it from a Python tuple.
+_OFFSET_CACHE: dict[tuple[tuple[float, float, float], torch.device], torch.Tensor] = {}
+
+
+def _target_pos_w(
+    env: ManagerBasedRlEnv,
+    target_name: str,
+    target_offset: tuple[float, float, float],
+) -> torch.Tensor:
+    target: Entity = env.scene[target_name]
+    key = (target_offset, target.data.root_link_pos_w.device)
+    offset = _OFFSET_CACHE.get(key)
+    if offset is None:
+        offset = torch.tensor(target_offset, device=key[1])
+        _OFFSET_CACHE[key] = offset
+    return target.data.root_link_pos_w + offset
+
+
+##
+# Observations.
+##
+
+
+def object_to_target_offset(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    target_name: str,
+    target_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Vector from object to an offset point above the target entity (world frame)."""
+    obj: Entity = env.scene[object_name]
+    return _target_pos_w(env, target_name, target_offset) - obj.data.root_link_pos_w
+
+
+##
+# Rewards.
+##
+
+
+def object_reach_reward(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    std: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Gaussian kernel over EE-to-object distance."""
+    robot: Entity = env.scene[asset_cfg.name]
+    obj: Entity = env.scene[object_name]
+    ee_pos_w = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)
+    err = torch.sum(torch.square(obj.data.root_link_pos_w - ee_pos_w), dim=-1)
+    return torch.exp(-err / std**2)
+
+
+def object_lifted(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    minimum_height: float,
+) -> torch.Tensor:
+    """1.0 while the object's center is above minimum_height (world z)."""
+    obj: Entity = env.scene[object_name]
+    return (obj.data.root_link_pos_w[:, 2] > minimum_height).float()
+
+
+def object_transport_reward(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    target_name: str,
+    std: float,
+    minimum_height: float,
+    target_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Gaussian kernel over object-to-target distance, gated on the object being lifted."""
+    obj: Entity = env.scene[object_name]
+    obj_pos_w = obj.data.root_link_pos_w
+    lifted = (obj_pos_w[:, 2] > minimum_height).float()
+    err = torch.sum(
+        torch.square(_target_pos_w(env, target_name, target_offset) - obj_pos_w), dim=-1
+    )
+    return lifted * torch.exp(-err / std**2)
+
+
+def object_in_tray(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    tray_name: str,
+    xy_tolerance: float,
+    max_height_above_tray: float,
+) -> torch.Tensor:
+    """Boolean mask: object inside the tray footprint and near its bottom."""
+    obj: Entity = env.scene[object_name]
+    tray: Entity = env.scene[tray_name]
+    delta = obj.data.root_link_pos_w - tray.data.root_link_pos_w
+    in_xy = (delta[:, :2].abs() < xy_tolerance).all(dim=-1)
+    low = delta[:, 2] < max_height_above_tray
+    return in_xy & low
+
+
+def terminated_by(env: ManagerBasedRlEnv, term_name: str) -> torch.Tensor:
+    """1.0 on the step the named termination term fires.
+
+    Terminations are computed before rewards each step, so the manager's
+    cached result is current; referencing it keeps the reward and the
+    termination condition structurally identical.
+    """
+    return env.termination_manager.get_term(term_name).float()
+
+
+##
+# Terminations.
+##
+
+
+def object_settled_in_tray(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    tray_name: str,
+    xy_tolerance: float,
+    max_height_above_tray: float,
+    max_speed: float,
+    max_ang_speed: float,
+) -> torch.Tensor:
+    """Success: object resting inside the tray with near-zero velocity."""
+    in_tray = object_in_tray(
+        env, object_name, tray_name, xy_tolerance, max_height_above_tray
+    )
+    obj: Entity = env.scene[object_name]
+    slow = torch.norm(obj.data.root_link_lin_vel_w, dim=-1) < max_speed
+    calm = torch.norm(obj.data.root_link_ang_vel_w, dim=-1) < max_ang_speed
+    return in_tray & slow & calm
