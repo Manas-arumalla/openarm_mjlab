@@ -40,7 +40,6 @@ from mjlab.viewer import ViewerConfig
 
 from ...actions import HoldDefaultPositionActionCfg
 from ...robot_bimanual import (
-    ARM_ATTACH_HEIGHT,
     BIMANUAL_ACTION_SCALE,
     EE_SITE_RIGHT,
     get_bimanual_robot_cfg,
@@ -57,7 +56,7 @@ DOOR_POS = (0.29, -0.10, 0.40)
 # skill, which is also staged to its grasp by a scripted approach.
 # Zero-action HOLDS this pose (position actions offset from the default).
 CAGED_HOME = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, ARM_ATTACH_HEIGHT),
+    pos=(0.0, 0.0, 0.0),
     joint_pos={
         "openarm_right_joint1": -0.2239,
         "openarm_right_joint2": -0.1175,
@@ -359,11 +358,14 @@ def openarm_door_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         rewards=rewards,
         terminations=terminations,
         curriculum={},
+        # A fixed WORLD camera rather than an ASSET_BODY tracking one:
+        # MuJoCo tracking cameras follow the tracked body's subtree COM
+        # (here the whole right arm), so offscreen-rendered videos sway
+        # with every arm motion. mjlab's interactive viewer works around
+        # that, so the artifact only shows up in recorded video.
         viewer=ViewerConfig(
-            origin_type=ViewerConfig.OriginType.ASSET_BODY,
-            entity_name="robot",
-            body_name="openarm_right_base_link",
-            distance=1.6,
+            origin_type=ViewerConfig.OriginType.WORLD,
+            lookat=(0.33, -0.10, 0.52),
             elevation=-20.0,
             azimuth=220.0,
         ),
