@@ -122,8 +122,19 @@ def openarm_reach_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=2.0,
             params={"robot_cfg": ROBOT_EE_CFG},
         ),
+        # Success is a one-shot bonus (weight * dt) that ENDS the episode,
+        # forfeiting all remaining dense reward. Hovering at the target
+        # while avoiding the settle condition earns ~0.10/step (coarse +
+        # fine + hold, dt-scaled), and because timeouts are value-
+        # bootstrapped that stream is worth up to 0.10 / (1 - 0.99) = 10 in
+        # discounted return. Terminating is therefore only optimal when
+        # weight * 0.02 > 0.99 * 10, i.e. weight > ~500 -- so the earlier
+        # 300 (= 6.0) sat below the bound and made hovering forever the
+        # reward-optimal behaviour. 750 (= 15.0) clears it with 50% margin
+        # while staying the same order as the per-episode dense return
+        # (~30), so it does not drown the shaping gradient.
         "success": RewardTermCfg(
-            func=reach_mdp.reach_success_bonus, weight=300.0, params={}
+            func=reach_mdp.reach_success_bonus, weight=750.0, params={}
         ),
         "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.01),
         "joint_vel_hinge": RewardTermCfg(
@@ -165,11 +176,14 @@ def openarm_reach_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         rewards=rewards,
         terminations=terminations,
         curriculum={},
+        # A fixed WORLD camera rather than an ASSET_BODY tracking one:
+        # MuJoCo tracking cameras follow the tracked body's subtree COM
+        # (here the whole right arm), so offscreen-rendered videos sway
+        # with every arm motion. mjlab's interactive viewer works around
+        # that, so the artifact only shows up in recorded video.
         viewer=ViewerConfig(
-            origin_type=ViewerConfig.OriginType.ASSET_BODY,
-            entity_name="robot",
-            body_name="openarm_right_base_link",
-            distance=1.6,
+            origin_type=ViewerConfig.OriginType.WORLD,
+            lookat=(0.35, -0.2, 0.55),
             elevation=-20.0,
             azimuth=220.0,
         ),

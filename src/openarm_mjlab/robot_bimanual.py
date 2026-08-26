@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bare bimanual OpenArm entity config shared by the reach/valve/door/drawer/puck/lift tasks.
+"""Pedestal-mounted bimanual OpenArm entity config, shared by the reach/valve/door/drawer/puck/lift tasks.
 
 Unlike the OpenArm Cell used by pick_place (a fixed table+walls+lifter scene
 with one arm frozen), this family mounts BOTH arms on a stand-alone pedestal
@@ -35,12 +35,7 @@ import openarm_mujoco.v2
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
-OPENARM_BIMANUAL_XML = openarm_mujoco.v2.openarm_bimanual_xml()
-
-# The task family's own scenes mount the pedestal at this height (matching
-# the OpenArm Cell asset's own arm-attach height, read once so a future
-# asset update cannot silently diverge from the value baked in below).
-ARM_ATTACH_HEIGHT = 0.698
+OPENARM_PEDESTAL_XML = openarm_mujoco.v2.asset_path("pedestal/openarm_pedestal.xml")
 
 EE_SITE_RIGHT = "right_ee_control_point"
 EE_SITE_LEFT = "left_ee_control_point"
@@ -53,8 +48,8 @@ GRASP_LOCAL_OFFSET = (0.0, 0.0, -0.135)
 
 
 def get_bimanual_spec() -> mujoco.MjSpec:
-    """Load the bare bimanual asset with its own position actuators removed."""
-    spec = mujoco.MjSpec.from_file(str(OPENARM_BIMANUAL_XML))
+    """Load the pedestal-mounted asset with its own position actuators removed."""
+    spec = mujoco.MjSpec.from_file(str(OPENARM_PEDESTAL_XML))
     for act in list(spec.actuators):
         spec.delete(act)
     return spec
@@ -83,7 +78,7 @@ BIMANUAL_ACTUATORS = tuple(
 
 # Home pose: elbows bent at 1.5708 rad, everything else at 0.
 BIMANUAL_HOME = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, ARM_ATTACH_HEIGHT),
+    pos=(0.0, 0.0, 0.0),
     joint_pos={
         "openarm_(left|right)_joint4": 1.5708,
         "openarm_(left|right)_joint[12356]": 0.0,
