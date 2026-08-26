@@ -42,7 +42,6 @@ from mjlab.viewer import ViewerConfig
 
 from ...actions import HoldDefaultPositionActionCfg
 from ...robot_bimanual import (
-    ARM_ATTACH_HEIGHT,
     BIMANUAL_ACTION_SCALE,
     EE_SITE_RIGHT,
     get_bimanual_robot_cfg,
@@ -54,7 +53,7 @@ from . import mdp as drawer_mdp
 # then continued to the closed-handle cage. Residuals 0.06mm; start->end
 # max joint travel 0.45 rad (single smooth branch).
 DRAWER_CAGED_HOME = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, ARM_ATTACH_HEIGHT),
+    pos=(0.0, 0.0, 0.0),
     joint_pos={
         "openarm_right_joint1": 0.3023,
         "openarm_right_joint2": 0.171,
@@ -524,11 +523,14 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         rewards=rewards,
         terminations=terminations,
         curriculum={},
+        # A fixed WORLD camera rather than an ASSET_BODY tracking one:
+        # MuJoCo tracking cameras follow the tracked body's subtree COM
+        # (here the whole right arm), so offscreen-rendered videos sway
+        # with every arm motion. mjlab's interactive viewer works around
+        # that, so the artifact only shows up in recorded video.
         viewer=ViewerConfig(
-            origin_type=ViewerConfig.OriginType.ASSET_BODY,
-            entity_name="robot",
-            body_name="openarm_right_base_link",
-            distance=1.8,
+            origin_type=ViewerConfig.OriginType.WORLD,
+            lookat=(0.45, -0.22, 0.52),
             elevation=-15.0,
             azimuth=160.0,
         ),
