@@ -351,6 +351,7 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.WORLD,
             lookat=(0.30, 0.0, 0.52),
+            distance=1.6,
             elevation=-20.0,
             azimuth=200.0,
         ),
