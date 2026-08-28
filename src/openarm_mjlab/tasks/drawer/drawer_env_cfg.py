@@ -531,6 +531,7 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.WORLD,
             lookat=(0.45, -0.22, 0.52),
+            distance=1.8,
             elevation=-15.0,
             azimuth=160.0,
         ),
