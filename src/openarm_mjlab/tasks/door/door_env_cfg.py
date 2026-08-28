@@ -366,6 +366,7 @@ def openarm_door_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.WORLD,
             lookat=(0.33, -0.10, 0.52),
+            distance=1.6,
             elevation=-20.0,
             azimuth=220.0,
         ),
