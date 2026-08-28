@@ -52,5 +52,5 @@ def openarm_drawer_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         experiment_name="openarm_drawer",
         save_interval=100,
         num_steps_per_env=24,
-        max_iterations=2_000,
+        max_iterations=3_000,
     )

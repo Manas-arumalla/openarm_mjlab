@@ -19,4 +19,3 @@ from . import drawer  # noqa: F401
 from . import pick_place  # noqa: F401
 from . import reach  # noqa: F401
 from . import valve  # noqa: F401
-
