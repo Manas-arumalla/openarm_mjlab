@@ -133,11 +133,6 @@ def grip_contact_reward(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tenso
     return fingers_on_handle(env, sensor_name).float()
 
 
-def grip_contact_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
-    """Return the observation wrapper for grip contact."""
-    return fingers_on_handle(env, sensor_name).float().unsqueeze(-1)
-
-
 def turn_rate_reward(
     env: ManagerBasedRlEnv,
     sensor_name: str,

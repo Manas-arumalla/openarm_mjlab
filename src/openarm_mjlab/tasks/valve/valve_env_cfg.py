@@ -45,6 +45,7 @@ from ...robot_bimanual import (
     EE_SITE_RIGHT,
     get_bimanual_robot_cfg,
 )
+from ...common_mdp import fingers_on_handle_obs
 from . import mdp as valve_mdp
 
 VALVE_POS = (0.25, 0.0, 0.40)
@@ -152,7 +153,7 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "grip_contact": ObservationTermCfg(
-            func=valve_mdp.grip_contact_obs,
+            func=fingers_on_handle_obs,
             params={"sensor_name": "finger_grip_contact"},
         ),
         "actions": ObservationTermCfg(func=base_mdp.last_action),
