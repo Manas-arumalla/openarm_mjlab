@@ -304,6 +304,7 @@ def openarm_puck_env_cfg(
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.WORLD,
             lookat=(0.28, -0.22, 0.50),
+            distance=1.6,
             elevation=-20.0,
             azimuth=220.0,
         ),
