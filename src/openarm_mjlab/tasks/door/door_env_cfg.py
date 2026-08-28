@@ -52,19 +52,23 @@ DOOR_POS = (0.29, -0.10, 0.40)
 # door flees from any touch; the 7 mm bar is never caged by accident in 768
 # episodes). Episodes therefore START CAGED: the task's home pose is a
 # DLS-IK solution (residual 0.07 mm) placing the finger-cage point at the
-# resting handle, fingers open around the bar. Comparable to the classical
+# resting handle, fingers open around the bar. Re-solved 2026-08-28
+# when the handle was moved 30mm proud of the panel face: this pose is
+# IK'd to the handle, so it had to move with it (it was ~40mm off
+# otherwise). Position AND orientation solved (0.002mm / 0.000deg),
+# keeping the previous wrist orientation so only the standoff changed. Comparable to the classical
 # skill, which is also staged to its grasp by a scripted approach.
 # Zero-action HOLDS this pose (position actions offset from the default).
 CAGED_HOME = EntityCfg.InitialStateCfg(
     pos=(0.0, 0.0, 0.0),
     joint_pos={
-        "openarm_right_joint1": -0.2239,
-        "openarm_right_joint2": -0.1175,
-        "openarm_right_joint3": -0.2346,
-        "openarm_right_joint4": 1.6706,
-        "openarm_right_joint5": -0.0022,
-        "openarm_right_joint6": -0.0398,
-        "openarm_right_joint7": 0.0922,
+        "openarm_right_joint1": -0.4154,
+        "openarm_right_joint2": -0.0994,
+        "openarm_right_joint3": -0.2940,
+        "openarm_right_joint4": 1.8242,
+        "openarm_right_joint5": -0.1300,
+        "openarm_right_joint6": -0.0327,
+        "openarm_right_joint7": 0.0081,
         "openarm_right_finger_joint[12]": -0.25,
         "openarm_left_joint4": 1.5708,
         "openarm_left_joint[12356]": 0.0,
@@ -121,15 +125,34 @@ def get_door_spec() -> mujoco.MjSpec:
         mass=0.08,
         rgba=(0.55, 0.45, 0.3, 1.0),
     )
+    # The handle stands 30 mm PROUD of the panel face on two short posts,
+    # the same arrangement the drawer fixture uses. It was previously a
+    # cylinder centred inside the panel: with panel half-thickness 0.006 and
+    # handle radius 0.007 it protruded just 1.0 mm from each face and its
+    # z-range lay entirely within the panel, so a parallel gripper could not
+    # close around it and the contact gate could be satisfied by pressing
+    # the panel rather than caging the bar. The robot base is at x=0 and the
+    # door at x=0.29, so the near face is door-local x=-0.006 and the handle
+    # stands off toward the robot. y is left at 0.13 so the hinge moment arm
+    # -- and therefore the task's difficulty -- is unchanged.
     door.add_geom(
         name="door_handle",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=(0, 0.13, -0.02, 0, 0.13, 0.02),
+        fromto=(-0.036, 0.13, -0.025, -0.036, 0.13, 0.025),
         size=(0.007, 0, 0),
         mass=0.02,
         rgba=(0.2, 0.2, 0.22, 1.0),
     )
-    door.add_site(name="handle_site", pos=(0, 0.13, 0), size=(0.005, 0, 0))
+    for z in (-0.02, 0.02):
+        door.add_geom(
+            name=f"door_handle_post_{'hi' if z > 0 else 'lo'}",
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            fromto=(-0.006, 0.13, z, -0.036, 0.13, z),
+            size=(0.004, 0, 0),
+            mass=0.005,
+            rgba=(0.2, 0.2, 0.22, 1.0),
+        )
+    door.add_site(name="handle_site", pos=(-0.036, 0.13, 0), size=(0.005, 0, 0))
     return spec
 
 
