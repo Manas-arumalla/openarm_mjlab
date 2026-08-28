@@ -100,7 +100,7 @@ BIMANUAL_ACTION_SCALE: dict[str, float] = {
 
 
 def get_bimanual_robot_cfg() -> EntityCfg:
-    """Entity config for the bare bimanual OpenArm, both arms actuated."""
+    """Entity config for the pedestal-mounted bimanual OpenArm, both arms actuated."""
     return EntityCfg(
         init_state=BIMANUAL_HOME,
         spec_fn=get_bimanual_spec,
