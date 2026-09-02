@@ -87,6 +87,20 @@ def get_puck_spec() -> mujoco.MjSpec:
         mass=0.2,
         friction=(0.4, 0.01, 0.01),
         rgba=(0.85, 0.4, 0.1, 1.0),
+        # Without a priority this friction never applied anywhere, so the
+        # puck was declared slippery and never was. MuJoCo takes the
+        # higher-priority geom's contact parameters and mixes only when
+        # priorities are equal, and that mix is an elementwise MAX. The
+        # right-arm finger geoms are priority=1, so they governed the push
+        # contact at mu=1.0; the table is priority=0 like the puck was, so
+        # that pair mixed to max(0.4, 1.0) = 1.0 as well. dr_puck_friction
+        # was randomizing a number MuJoCo read on neither pair. Outranking
+        # both makes the declared 0.4 govern (measured: 0.4 at the finger
+        # and 0.4 at the table). condim=4 and the fingers' own solref keep
+        # the finger contact model as it was, so only the friction changes.
+        priority=2,
+        condim=4,
+        solref=(0.005, 1.0),
     )
     return spec
 
