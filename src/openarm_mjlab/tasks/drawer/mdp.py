@@ -22,15 +22,28 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.utils.lab_api.math import quat_apply, quat_inv
+from mjlab.utils.lab_api.math import quat_apply
 
-from ...common_mdp import fingers_on_handle, fingers_on_handle_obs
-from ...robot_bimanual import GRASP_LOCAL_OFFSET
+from ...common_mdp import (
+    contact_reward,
+    ee_to_target,
+    fingers_on_handle,
+    fingers_on_handle_obs,
+    reach_target_reward,
+    terminated_by,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
-__all__ = ["fingers_on_handle", "fingers_on_handle_obs"]
+__all__ = [
+    "contact_reward",
+    "ee_to_target",
+    "fingers_on_handle",
+    "fingers_on_handle_obs",
+    "reach_target_reward",
+    "terminated_by",
+]
 
 # The cabinet's slide joint runs -0.10 (open) .. 0 (closed); opening in
 # meters is -qpos.
@@ -41,38 +54,6 @@ def drawer_opening(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.T
     """Return the drawer opening in meters, shape ``(num_envs,)``."""
     cabinet: Entity = env.scene[asset_cfg.name]
     return -cabinet.data.joint_pos[:, asset_cfg.joint_ids].squeeze(-1)
-
-
-def ee_to_handle(
-    env: ManagerBasedRlEnv,
-    robot_cfg: SceneEntityCfg,
-    cabinet_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Return the vector from the finger-cage center to the drawer handle, base frame."""
-    robot: Entity = env.scene[robot_cfg.name]
-    cabinet: Entity = env.scene[cabinet_cfg.name]
-    ee_pos_w = robot.data.site_pos_w[:, robot_cfg.site_ids].squeeze(1)
-    ee_quat_w = robot.data.site_quat_w[:, robot_cfg.site_ids].squeeze(1)
-    offset = torch.tensor(GRASP_LOCAL_OFFSET, device=ee_pos_w.device).expand_as(
-        ee_pos_w
-    )
-    tool_pos_w = ee_pos_w + quat_apply(ee_quat_w, offset)
-    handle_pos_w = cabinet.data.site_pos_w[:, cabinet_cfg.site_ids].squeeze(1)
-    vec_w = handle_pos_w - tool_pos_w
-    base_quat_w = robot.data.root_link_quat_w
-    return quat_apply(quat_inv(base_quat_w), vec_w)
-
-
-def reach_handle_reward(
-    env: ManagerBasedRlEnv,
-    std: float,
-    robot_cfg: SceneEntityCfg,
-    cabinet_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Return a Gaussian-kernel reward on EE-to-handle distance."""
-    vec = ee_to_handle(env, robot_cfg, cabinet_cfg)
-    d2 = torch.sum(torch.square(vec), dim=-1)
-    return torch.exp(-d2 / std**2)
 
 
 def drawer_speed(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -109,7 +90,7 @@ def handle_contact_reward(
     asset_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
     """Return a dense reward for touching the handle; also freezes engagement depth."""
-    contact = fingers_on_handle(env, sensor_name).float()
+    contact = contact_reward(env, sensor_name)
     newly = (contact > 0) & (_engaged(env) == 0)
     if newly.any():
         frac = torch.clamp(drawer_opening(env, asset_cfg) / DRAWER_TRAVEL, 0.0, 1.0)
@@ -273,7 +254,7 @@ def approach_precision_reward(
     so the fade never grows with how much further the policy has pulled
     since first contact.
     """
-    fine = reach_handle_reward(env, std, robot_cfg, cabinet_cfg)
+    fine = reach_target_reward(env, std, robot_cfg, cabinet_cfg)
     return fine * (1.0 - _engage_frac(env))
 
 

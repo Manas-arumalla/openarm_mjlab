@@ -269,8 +269,8 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-0.002, n_max=0.002),
         ),
         "ee_to_handle": ObservationTermCfg(
-            func=drawer_mdp.ee_to_handle,
-            params={"robot_cfg": ROBOT_EE_CFG, "cabinet_cfg": CABINET_HANDLE_CFG},
+            func=drawer_mdp.ee_to_target,
+            params={"robot_cfg": ROBOT_EE_CFG, "target_cfg": CABINET_HANDLE_CFG},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "handle_contact": ObservationTermCfg(
@@ -392,12 +392,12 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
     rewards = {
         "reach_handle": RewardTermCfg(
-            func=drawer_mdp.reach_handle_reward,
+            func=drawer_mdp.reach_target_reward,
             weight=1.0,
             params={
                 "std": 0.2,
                 "robot_cfg": ROBOT_EE_CFG,
-                "cabinet_cfg": CABINET_HANDLE_CFG,
+                "target_cfg": CABINET_HANDLE_CFG,
             },
         ),
         # handle_contact runs first: it's what freezes the engagement
@@ -467,7 +467,9 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"asset_cfg": CABINET_JOINT_CFG},
         ),
         "success": RewardTermCfg(
-            func=drawer_mdp.success_bonus, weight=900.0, params={}
+            func=drawer_mdp.terminated_by,
+            weight=900.0,
+            params={"term_name": "held_fully_open"},
         ),
         "drawer_speed": RewardTermCfg(
             func=drawer_mdp.drawer_speed_penalty,

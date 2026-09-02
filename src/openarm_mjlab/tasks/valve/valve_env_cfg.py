@@ -148,8 +148,8 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "ee_to_grip": ObservationTermCfg(
-            func=valve_mdp.ee_to_grip,
-            params={"robot_cfg": ROBOT_EE_CFG, "valve_cfg": VALVE_GRIP_CFG},
+            func=valve_mdp.ee_to_target,
+            params={"robot_cfg": ROBOT_EE_CFG, "target_cfg": VALVE_GRIP_CFG},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "grip_contact": ObservationTermCfg(
@@ -263,12 +263,16 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
     rewards = {
         "reach_grip": RewardTermCfg(
-            func=valve_mdp.reach_grip_reward,
+            func=valve_mdp.reach_target_reward,
             weight=1.0,
-            params={"std": 0.2, "robot_cfg": ROBOT_EE_CFG, "valve_cfg": VALVE_GRIP_CFG},
+            params={
+                "std": 0.2,
+                "robot_cfg": ROBOT_EE_CFG,
+                "target_cfg": VALVE_GRIP_CFG,
+            },
         ),
         "grip_contact": RewardTermCfg(
-            func=valve_mdp.grip_contact_reward,
+            func=valve_mdp.contact_reward,
             weight=0.5,
             params={"sensor_name": "finger_grip_contact"},
         ),
@@ -283,7 +287,9 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"sensor_name": "finger_grip_contact", "asset_cfg": VALVE_JOINT_CFG},
         ),
         "success": RewardTermCfg(
-            func=valve_mdp.turn_success_bonus, weight=500.0, params={}
+            func=valve_mdp.terminated_by,
+            weight=500.0,
+            params={"term_name": "turned_target"},
         ),
         "reverse": RewardTermCfg(
             func=valve_mdp.reverse_rate_penalty,

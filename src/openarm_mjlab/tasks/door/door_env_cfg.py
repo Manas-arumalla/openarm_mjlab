@@ -189,12 +189,12 @@ def openarm_door_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "ee_to_handle": ObservationTermCfg(
-            func=door_mdp.ee_to_handle,
-            params={"robot_cfg": ROBOT_EE_CFG, "handle_cfg": DOOR_HANDLE_CFG},
+            func=door_mdp.ee_to_target,
+            params={"robot_cfg": ROBOT_EE_CFG, "target_cfg": DOOR_HANDLE_CFG},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "handle_contact": ObservationTermCfg(
-            func=door_mdp.handle_contact_obs,
+            func=door_mdp.fingers_on_handle_obs,
             params={"sensor_name": "finger_grip_contact"},
         ),
         "actions": ObservationTermCfg(func=base_mdp.last_action),
@@ -298,16 +298,16 @@ def openarm_door_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
     rewards = {
         "reach_handle": RewardTermCfg(
-            func=door_mdp.reach_handle_reward,
+            func=door_mdp.reach_target_reward,
             weight=1.0,
             params={
                 "std": 0.2,
                 "robot_cfg": ROBOT_EE_CFG,
-                "handle_cfg": DOOR_HANDLE_CFG,
+                "target_cfg": DOOR_HANDLE_CFG,
             },
         ),
         "handle_contact": RewardTermCfg(
-            func=door_mdp.handle_contact_reward,
+            func=door_mdp.contact_reward,
             weight=0.5,
             params={"sensor_name": "finger_grip_contact"},
         ),
@@ -317,7 +317,9 @@ def openarm_door_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"sensor_name": "finger_grip_contact", "asset_cfg": DOOR_JOINT_CFG},
         ),
         "success": RewardTermCfg(
-            func=door_mdp.swing_success_bonus, weight=400.0, params={}
+            func=door_mdp.terminated_by,
+            weight=400.0,
+            params={"term_name": "swung_target"},
         ),
         "uncontrolled": RewardTermCfg(
             func=door_mdp.uncontrolled_motion_penalty,
