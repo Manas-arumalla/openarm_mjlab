@@ -184,6 +184,19 @@ def get_block_spec() -> mujoco.MjSpec:
         mass=0.05,
         friction=(2.5, 0.1, 0.01),
         rgba=(0.9, 0.2, 0.2, 1.0),
+        # This is a GRIP friction -- it exists so the fingers can hold the
+        # block -- but without a priority it was inert at exactly the
+        # contact it was written for. The right-arm finger geoms are
+        # priority=1 and a default-priority geom is outranked, so the
+        # fingers' mu=1.0 governed the grasp and the 2.5 applied only
+        # against the table, where a high value makes the block harder to
+        # slide: the opposite of the intent. priority=2 puts the block
+        # above the fingers so 2.5 reaches the grasp (measured), leaving
+        # the table pair as it already was. condim=4 and the fingers' own
+        # solref keep the contact model as it was, so only friction changes.
+        priority=2,
+        condim=4,
+        solref=(0.005, 1.0),
     )
     return spec
 
