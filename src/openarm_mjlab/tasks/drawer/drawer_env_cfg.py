@@ -138,7 +138,6 @@ DRAWER_ARM_SCALE["openarm_right_finger_joint1"] = 0.25 * 30.0 / 60.0
 CABINET_POS = (0.50, -0.26, 0.46)
 _TABLE_REL_POS = (0.47 - CABINET_POS[0], 0.0 - CABINET_POS[1], 0.36 - CABINET_POS[2])
 
-SUCCESS_OPENING = 0.05  # Bench gate, meters.
 FULL_OPENING = 0.09
 MAX_PULL_SPEED = 0.15  # A grasp-pull moves the slide slowly.
 
@@ -210,6 +209,19 @@ def get_cabinet_spec() -> mujoco.MjSpec:
         size=(0.007, 0, 0),
         mass=0.02,
         rgba=(0.2, 0.2, 0.22, 1.0),
+        # The right-arm finger collision geoms are priority=1, so a
+        # default-priority handle is outranked and their parameters govern
+        # every fingertip contact -- which left dr_handle_friction below
+        # randomizing a value MuJoCo never read (measured: effective mu
+        # stayed 1.0 across the whole 0.6-1.4 range). priority=2 puts this
+        # geom above them, so its own friction, and the randomization
+        # applied to it, actually reach the contact.
+        # (robot.FINGERTIP_COLLISION's priority=2 override is not in play:
+        # its regex matches only the *_left_* geoms, not this arm.)
+        priority=2,
+        condim=3,
+        friction=(1.0, 0.01, 0.01),
+        solref=(0.005, 1.0),
     )
     drawer.add_geom(
         name="drawer_handle_stem1",
@@ -441,22 +453,6 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=3.0,
             params={
                 "sensor_name": "finger_handle_contact",
-                "max_speed": MAX_PULL_SPEED,
-                "asset_cfg": CABINET_JOINT_CFG,
-            },
-        ),
-        "hold_open_bonus": RewardTermCfg(
-            func=drawer_mdp.hold_open_bonus_reward,
-            weight=2.0,
-            params={
-                "sensor_name": "finger_handle_contact",
-                # Threshold is FULL_OPENING (90mm), not SUCCESS_OPENING
-                # (50mm): a lower threshold pays continuously for sitting
-                # still anywhere past 50mm, a 40mm-wide camping zone
-                # competing with the one-time success bonus. This shapes
-                # settling into a controlled hold AT the success point,
-                # not a rest stop on the way there.
-                "threshold": FULL_OPENING,
                 "max_speed": MAX_PULL_SPEED,
                 "asset_cfg": CABINET_JOINT_CFG,
             },

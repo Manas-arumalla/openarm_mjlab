@@ -110,6 +110,19 @@ def get_valve_spec() -> mujoco.MjSpec:
         size=(0.007, 0, 0),
         mass=0.02,
         rgba=(0.2, 0.2, 0.22, 1.0),
+        # The right-arm finger collision geoms are priority=1, so a
+        # default-priority grip is outranked and their parameters govern
+        # every fingertip contact -- which left dr_grip_friction below
+        # randomizing a value MuJoCo never read (measured: effective mu
+        # stayed 1.0 across the whole 0.6-1.4 range). priority=2 puts this
+        # geom above them, so its own friction, and the randomization
+        # applied to it, actually reach the contact.
+        # (robot.FINGERTIP_COLLISION's priority=2 override is not in play:
+        # its regex matches only the *_left_* geoms, not this arm.)
+        priority=2,
+        condim=3,
+        friction=(1.0, 0.01, 0.01),
+        solref=(0.005, 1.0),
     )
     valve.add_site(name="grip_site", pos=(0.062, 0, 0), size=(0.005, 0, 0))
     return spec

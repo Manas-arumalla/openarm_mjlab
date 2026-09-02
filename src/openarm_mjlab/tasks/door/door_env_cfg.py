@@ -142,6 +142,19 @@ def get_door_spec() -> mujoco.MjSpec:
         size=(0.007, 0, 0),
         mass=0.02,
         rgba=(0.2, 0.2, 0.22, 1.0),
+        # The right-arm finger collision geoms are priority=1, so a
+        # default-priority handle is outranked and their parameters govern
+        # every fingertip contact -- which left dr_handle_friction below
+        # randomizing a value MuJoCo never read (measured: effective mu
+        # stayed 1.0 across the whole 0.6-1.4 range). priority=2 puts this
+        # geom above them, so its own friction, and the randomization
+        # applied to it, actually reach the contact.
+        # (robot.FINGERTIP_COLLISION's priority=2 override is not in play:
+        # its regex matches only the *_left_* geoms, not this arm.)
+        priority=2,
+        condim=3,
+        friction=(1.0, 0.01, 0.01),
+        solref=(0.005, 1.0),
     )
     for z in (-0.02, 0.02):
         door.add_geom(

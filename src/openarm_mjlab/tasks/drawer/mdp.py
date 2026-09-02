@@ -185,25 +185,6 @@ def closing_speed_penalty(
     return torch.clamp(closing_rate, min=0.0)
 
 
-def success_bonus(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """Fire exactly once, on the ``held_fully_open`` termination step."""
-    return env.termination_manager.get_term("held_fully_open").float()
-
-
-def hold_open_bonus_reward(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    threshold: float,
-    max_speed: float,
-    asset_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Return a bonus for a quasi-static, contact-held hold past the success gate."""
-    opening_ok = drawer_opening(env, asset_cfg) > threshold
-    slow = drawer_speed(env, asset_cfg) < max_speed
-    contact = fingers_on_handle(env, sensor_name)
-    return (opening_ok & slow & contact).float()
-
-
 def drawer_speed_penalty(
     env: ManagerBasedRlEnv,
     max_speed: float,
