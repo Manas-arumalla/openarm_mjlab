@@ -27,13 +27,26 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.utils.lab_api.math import quat_apply, quat_inv
 
-from ...common_mdp import fingers_on_handle
-from ...robot_bimanual import GRASP_LOCAL_OFFSET
+from ...common_mdp import (
+    contact_reward,
+    ee_to_target,
+    fingers_on_handle,
+    reach_target_reward,
+    terminated_by,
+)
+
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
+
+__all__ = [
+    "contact_reward",
+    "ee_to_target",
+    "fingers_on_handle",
+    "reach_target_reward",
+    "terminated_by",
+]
 
 TARGET_TURN = 1.35  # rad (77.4 deg): the single-grasp kinematic ceiling.
 MAX_TURN_RATE = 1.0  # rad/s
@@ -97,42 +110,6 @@ def turn_gained(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tens
     return torch.clamp(valve_angle(env, asset_cfg) - _start_angle(env), min=0.0)
 
 
-def ee_to_grip(
-    env: ManagerBasedRlEnv,
-    robot_cfg: SceneEntityCfg,
-    valve_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Return the vector from the finger-cage center to the valve grip, base frame."""
-    robot: Entity = env.scene[robot_cfg.name]
-    valve: Entity = env.scene[valve_cfg.name]
-    ee_pos_w = robot.data.site_pos_w[:, robot_cfg.site_ids].squeeze(1)
-    ee_quat_w = robot.data.site_quat_w[:, robot_cfg.site_ids].squeeze(1)
-    offset = torch.tensor(GRASP_LOCAL_OFFSET, device=ee_pos_w.device).expand_as(
-        ee_pos_w
-    )
-    tool_pos_w = ee_pos_w + quat_apply(ee_quat_w, offset)
-    grip_pos_w = valve.data.site_pos_w[:, valve_cfg.site_ids].squeeze(1)
-    vec_w = grip_pos_w - tool_pos_w
-    base_quat_w = robot.data.root_link_quat_w
-    return quat_apply(quat_inv(base_quat_w), vec_w)
-
-
-def reach_grip_reward(
-    env: ManagerBasedRlEnv,
-    std: float,
-    robot_cfg: SceneEntityCfg,
-    valve_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Return a Gaussian-shaped reward on distance from the tool to the grip."""
-    d2 = torch.sum(torch.square(ee_to_grip(env, robot_cfg, valve_cfg)), dim=-1)
-    return torch.exp(-d2 / std**2)
-
-
-def grip_contact_reward(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
-    """Return a dense reward for holding the grip in contact."""
-    return fingers_on_handle(env, sensor_name).float()
-
-
 def turn_rate_reward(
     env: ManagerBasedRlEnv,
     sensor_name: str,
@@ -192,11 +169,6 @@ def overspeed_penalty(
 ) -> torch.Tensor:
     """Return a penalty for turning faster than ``MAX_TURN_RATE``."""
     return torch.clamp(valve_rate(env, asset_cfg).abs() - MAX_TURN_RATE, min=0.0)
-
-
-def turn_success_bonus(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """Fire exactly once, on the success-termination step."""
-    return env.termination_manager.get_term("turned_target").float()
 
 
 def turned_target(

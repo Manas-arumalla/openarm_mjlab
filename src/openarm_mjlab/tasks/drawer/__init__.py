@@ -12,10 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OpenArm task registrations. Importing this package registers all tasks."""
+"""OpenArm drawer-pulling task."""
 
-from . import door  # noqa: F401
-from . import drawer  # noqa: F401
-from . import pick_place  # noqa: F401
-from . import reach  # noqa: F401
-from . import valve  # noqa: F401
+from mjlab.tasks.manipulation.rl import ManipulationOnPolicyRunner
+from mjlab.tasks.registry import register_mjlab_task
+
+from .drawer_env_cfg import openarm_drawer_env_cfg
+from .rl_cfg import openarm_drawer_ppo_runner_cfg
+
+register_mjlab_task(
+    task_id="OpenArm-Drawer",
+    env_cfg=openarm_drawer_env_cfg(),
+    play_env_cfg=openarm_drawer_env_cfg(play=True),
+    rl_cfg=openarm_drawer_ppo_runner_cfg(),
+    runner_cls=ManipulationOnPolicyRunner,
+)

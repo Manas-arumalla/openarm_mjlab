@@ -134,7 +134,9 @@ def openarm_reach_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # while staying the same order as the per-episode dense return
         # (~30), so it does not drown the shaping gradient.
         "success": RewardTermCfg(
-            func=reach_mdp.reach_success_bonus, weight=750.0, params={}
+            func=reach_mdp.terminated_by,
+            weight=750.0,
+            params={"term_name": "reached"},
         ),
         "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.01),
         "joint_vel_hinge": RewardTermCfg(

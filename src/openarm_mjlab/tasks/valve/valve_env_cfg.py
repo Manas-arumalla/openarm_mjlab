@@ -110,6 +110,19 @@ def get_valve_spec() -> mujoco.MjSpec:
         size=(0.007, 0, 0),
         mass=0.02,
         rgba=(0.2, 0.2, 0.22, 1.0),
+        # The right-arm finger collision geoms are priority=1, so a
+        # default-priority grip is outranked and their parameters govern
+        # every fingertip contact -- which left dr_grip_friction below
+        # randomizing a value MuJoCo never read (measured: effective mu
+        # stayed 1.0 across the whole 0.6-1.4 range). priority=2 puts this
+        # geom above them, so its own friction, and the randomization
+        # applied to it, actually reach the contact.
+        # (robot.FINGERTIP_COLLISION's priority=2 override is not in play:
+        # its regex matches only the *_left_* geoms, not this arm.)
+        priority=2,
+        condim=3,
+        friction=(1.0, 0.01, 0.01),
+        solref=(0.005, 1.0),
     )
     valve.add_site(name="grip_site", pos=(0.062, 0, 0), size=(0.005, 0, 0))
     return spec
@@ -148,8 +161,8 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "ee_to_grip": ObservationTermCfg(
-            func=valve_mdp.ee_to_grip,
-            params={"robot_cfg": ROBOT_EE_CFG, "valve_cfg": VALVE_GRIP_CFG},
+            func=valve_mdp.ee_to_target,
+            params={"robot_cfg": ROBOT_EE_CFG, "target_cfg": VALVE_GRIP_CFG},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "grip_contact": ObservationTermCfg(
@@ -263,12 +276,16 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
     rewards = {
         "reach_grip": RewardTermCfg(
-            func=valve_mdp.reach_grip_reward,
+            func=valve_mdp.reach_target_reward,
             weight=1.0,
-            params={"std": 0.2, "robot_cfg": ROBOT_EE_CFG, "valve_cfg": VALVE_GRIP_CFG},
+            params={
+                "std": 0.2,
+                "robot_cfg": ROBOT_EE_CFG,
+                "target_cfg": VALVE_GRIP_CFG,
+            },
         ),
         "grip_contact": RewardTermCfg(
-            func=valve_mdp.grip_contact_reward,
+            func=valve_mdp.contact_reward,
             weight=0.5,
             params={"sensor_name": "finger_grip_contact"},
         ),
@@ -283,7 +300,9 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"sensor_name": "finger_grip_contact", "asset_cfg": VALVE_JOINT_CFG},
         ),
         "success": RewardTermCfg(
-            func=valve_mdp.turn_success_bonus, weight=500.0, params={}
+            func=valve_mdp.terminated_by,
+            weight=500.0,
+            params={"term_name": "turned_target"},
         ),
         "reverse": RewardTermCfg(
             func=valve_mdp.reverse_rate_penalty,
