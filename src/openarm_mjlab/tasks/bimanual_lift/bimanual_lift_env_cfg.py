@@ -81,6 +81,7 @@ import mujoco
 
 from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.action_manager import ActionTermCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -546,6 +547,50 @@ def openarm_bimanual_lift_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "asset_cfg": BAR_CFG,
                 "robot_joints_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        # Domain randomization, same pattern and magnitudes as lift's.
+        # mode="startup" so each parallel env draws one fixed value for its
+        # whole training life, matching mjlab's own reference convention.
+        #
+        # Randomizing the bar's friction only became meaningful once the end
+        # geoms were given contact priority: at default priority the fingers
+        # outranked them and MuJoCo never read the bar's friction at all, so
+        # this term would have randomized a value with no effect, which is
+        # exactly the dead-randomization defect the other tasks had.
+        "dr_bar_friction": EventTermCfg(
+            mode="startup",
+            func=dr.geom_friction,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "bar", geom_names=("bar_end_right_geom", "bar_end_left_geom")
+                ),
+                "operation": "scale",
+                "distribution": "uniform",
+                "axes": [0],
+                "ranges": (0.6, 1.4),
+            },
+        ),
+        "dr_bar_mass": EventTermCfg(
+            mode="startup",
+            func=dr.pseudo_inertia,
+            params={
+                "asset_cfg": SceneEntityCfg("bar", body_names=("bar",)),
+                "alpha_range": (-0.1, 0.1),
+            },
+        ),
+        # No actuator_names filter: dr.pd_gains indexes the grouped actuator
+        # configs rather than the individually-named joints every other dr
+        # function indexes, so a regex here silently produces out-of-range
+        # indices. Both arms are actuated in this task anyway.
+        "dr_arm_gains": EventTermCfg(
+            mode="startup",
+            func=dr.pd_gains,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "kp_range": (0.85, 1.15),
+                "kd_range": (0.85, 1.15),
+                "operation": "scale",
             },
         ),
     }
