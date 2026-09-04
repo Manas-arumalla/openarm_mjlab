@@ -361,6 +361,14 @@ def get_bar_spec() -> mujoco.MjSpec:
     end_half = (0.025, 0.025, 0.03)
     end_mass = 0.05
     end_friction = (2.5, 0.1, 0.01)
+    # Both arms' finger collision geoms are priority=1, so a
+    # default-priority bar end is outranked and the fingers' parameters
+    # govern every grasp contact: the 2.5 grip friction authored here was
+    # never read (measured: effective mu 1.0 on both ends). priority=2
+    # puts these geoms above the fingers so their own friction applies.
+    # condim=4 is required as well -- at the default condim=3 MuJoCo
+    # ignores the torsional component, which is what resists the bar
+    # twisting out of a two-point grasp.
     body.add_geom(
         name="bar_end_right_geom",
         type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -368,8 +376,19 @@ def get_bar_spec() -> mujoco.MjSpec:
         pos=bl_mdp.RIGHT_END_OFFSET,
         mass=end_mass,
         friction=end_friction,
+        priority=2,
+        condim=4,
+        solref=(0.005, 1.0),
         rgba=(0.9, 0.2, 0.2, 1.0),
     )
+    # Both arms' finger collision geoms are priority=1, so a
+    # default-priority bar end is outranked and the fingers' parameters
+    # govern every grasp contact: the 2.5 grip friction authored here was
+    # never read (measured: effective mu 1.0 on both ends). priority=2
+    # puts these geoms above the fingers so their own friction applies.
+    # condim=4 is required as well -- at the default condim=3 MuJoCo
+    # ignores the torsional component, which is what resists the bar
+    # twisting out of a two-point grasp.
     body.add_geom(
         name="bar_end_left_geom",
         type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -377,6 +396,9 @@ def get_bar_spec() -> mujoco.MjSpec:
         pos=bl_mdp.LEFT_END_OFFSET,
         mass=end_mass,
         friction=end_friction,
+        priority=2,
+        condim=4,
+        solref=(0.005, 1.0),
         rgba=(0.2, 0.3, 0.9, 1.0),
     )
     # Rod spans between the two end blocks' inner faces (offset ∓ half
