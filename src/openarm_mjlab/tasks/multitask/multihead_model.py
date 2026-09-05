@@ -36,11 +36,15 @@ so the final layer becomes one head per task.
 
 Export needs a third. ``get_latent`` is where the head is chosen, and rsl_rl's
 JIT and ONNX wrappers do not call it -- they run ``obs_normalizer`` and then
-``mlp`` directly. A traced copy therefore has no way to read the one-hot, and
-``torch.jit.trace`` freezes whatever index the tracing input happened to
-produce, so every exported policy runs the head of the task that was traced
-regardless of the observation it is given. ``as_jit`` and ``as_onnx`` below
-return wrappers that select the head inside the graph instead.
+``mlp`` directly, so neither can read the one-hot at all. The two paths then
+fail differently. ``export_policy_to_jit`` runs ``torch.jit.script``, which
+cannot compile the selection and raises. ``export_policy_to_onnx`` traces
+against an all-zero dummy observation, which makes the head index a constant:
+argmax over an all-zero one-hot is head 0, so the exported policy runs reach's
+head for every task without raising anything.
+
+``as_jit`` and ``as_onnx`` below return wrappers that select the head from the
+observation inside the graph instead.
 """
 
 from __future__ import annotations
@@ -146,8 +150,11 @@ class _ExportMultiHead(nn.Module):
     The base wrappers in rsl_rl call ``obs_normalizer`` and then ``mlp``,
     bypassing ``get_latent`` and so bypassing the only place the task one-hot
     is read. This does the same work on the raw observation tensor, so the
-    argmax becomes a node in the traced graph rather than a Python value
-    captured at trace time.
+    argmax becomes a node in the exported graph rather than a Python value
+    fixed when that graph was built.
+
+    Everything here has to stay compatible with ``torch.jit.script`` as well
+    as with tracing, since the JIT and ONNX exporters use one each.
     """
 
     def __init__(self, model: MultiHeadMLPModel) -> None:
@@ -163,12 +170,21 @@ class _ExportMultiHead(nn.Module):
         else:
             self.deterministic_output = nn.Identity()
         self.input_size = model.obs_dim
+        # An instance attribute, not the module-level constant: TorchScript
+        # cannot close over a global int, and ``export_policy_to_jit`` runs
+        # ``torch.jit.script``, not ``torch.jit.trace``.
+        self.num_tasks = int(NUM_TASKS)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run deterministic inference on pre-concatenated observations."""
-        index = x[..., -NUM_TASKS:].argmax(dim=-1)
+        index = x[..., x.shape[-1] - self.num_tasks :].argmax(dim=-1)
         latent = self.trunk(self.obs_normalizer(x))
-        stacked = torch.stack([head(latent) for head in self.heads], dim=1)
+        # A plain loop rather than a comprehension: TorchScript can iterate an
+        # nn.ModuleList, but not comprehend over one.
+        outputs: list[torch.Tensor] = []
+        for head in self.heads:
+            outputs.append(head(latent))
+        stacked = torch.stack(outputs, dim=1)
         gathered = stacked.gather(
             1, index.view(-1, 1, 1).expand(-1, 1, stacked.shape[-1])
         )

@@ -189,39 +189,53 @@ def _build_model(head_hidden: int = 0):
     return model
 
 
-def test_exported_policy_selects_the_head_the_one_hot_asks_for():
-    """The head must be chosen inside the exported graph, not at trace time.
-
-    rsl_rl's export wrappers skip ``get_latent``, which is the only place the
-    task one-hot is read. Without an override, ``torch.jit.trace`` bakes in the
-    index its tracing input produced -- an all-zero observation, so head 0 --
-    and every exported policy runs reach's head whatever task it is given.
-    """
+def _one_hot_obs(index: int, core: torch.Tensor):
+    """A raw observation batch tagged for one task."""
     from tensordict import TensorDict
 
+    raw = torch.cat([core, torch.zeros(len(core), NUM_TASKS)], dim=-1)
+    raw[:, OBS_DIM - NUM_TASKS + index] = 1.0
+    return raw, TensorDict({"actor": raw, "critic": raw}, batch_size=[len(core)])
+
+
+def test_jit_export_selects_the_head_the_one_hot_asks_for():
+    """The head must be chosen inside the exported graph.
+
+    rsl_rl's export wrappers skip ``get_latent``, which is the only place the
+    task one-hot is read, so a model that leaves head selection there cannot
+    be exported correctly. This uses ``torch.jit.script``, which is what
+    ``export_policy_to_jit`` calls -- on the unfixed model it fails outright
+    with ``Module '_MultiHead' has no attribute '_owner'``.
+    """
     model = _build_model()
-    exported = torch.jit.trace(model.as_jit(), torch.zeros(1, OBS_DIM))
+    exported = torch.jit.script(model.as_jit())
 
     torch.manual_seed(0)
     core = torch.randn(4, OBS_DIM - NUM_TASKS)
     for index, name in enumerate(mdp.TASK_NAMES):
-        raw = torch.cat([core, torch.zeros(4, NUM_TASKS)], dim=-1)
-        raw[:, OBS_DIM - NUM_TASKS + index] = 1.0
-        obs = TensorDict({"actor": raw, "critic": raw}, batch_size=[4])
+        raw, obs = _one_hot_obs(index, core)
         with torch.no_grad():
             eager = model(obs)
-            traced = exported(raw)
-        assert torch.allclose(eager, traced, atol=1e-5), (
+            scripted = exported(raw)
+        assert torch.allclose(eager, scripted, atol=1e-5), (
             f"{name}: exported policy disagrees with the eager model by "
-            f"{(eager - traced).abs().max().item():.4f} -- it is running a "
+            f"{(eager - scripted).abs().max().item():.4f} -- it is running a "
             "different task's head"
         )
 
 
 def test_onnx_export_wrapper_selects_the_head_too():
-    """The ONNX path needs the same treatment as the JIT path."""
-    from tensordict import TensorDict
+    """The ONNX path needs the same treatment, and fails more quietly.
 
+    ``export_policy_to_onnx`` traces with an all-zero dummy observation. On
+    the unfixed model the head index is a Python value read at trace time, so
+    ``argmax`` of an all-zero one-hot bakes in head 0 and every exported
+    policy runs reach's head whatever task it is given -- with nothing raised.
+
+    Checked at the wrapper level rather than through a real ONNX round trip
+    because that would need onnxruntime, which this package does not depend
+    on. The wrapper is where the selection lives, so it is what regresses.
+    """
     model = _build_model()
     onnx_model = model.as_onnx(verbose=False)
     (dummy,) = onnx_model.get_dummy_inputs()
@@ -232,8 +246,6 @@ def test_onnx_export_wrapper_selects_the_head_too():
     torch.manual_seed(0)
     core = torch.randn(4, OBS_DIM - NUM_TASKS)
     for index, name in enumerate(mdp.TASK_NAMES):
-        raw = torch.cat([core, torch.zeros(4, NUM_TASKS)], dim=-1)
-        raw[:, OBS_DIM - NUM_TASKS + index] = 1.0
-        obs = TensorDict({"actor": raw, "critic": raw}, batch_size=[4])
+        raw, obs = _one_hot_obs(index, core)
         with torch.no_grad():
             assert torch.allclose(model(obs), onnx_model(raw), atol=1e-5), name
