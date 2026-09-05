@@ -25,6 +25,11 @@ Writes three things next to each other:
 * ``scene/`` -- the compiled MJCF together with every mesh it references, so it
   loads with plain ``mujoco.MjModel.from_xml_path`` on a machine that has
   neither mjlab nor the original asset tree.
+
+Both policy files are read back and checked against the policy still in
+memory before the export is reported as done. An exporter that can write a
+file which does not match what was trained is the worst kind to have, because
+the next place that surfaces is on hardware.
 """
 
 from __future__ import annotations
@@ -176,6 +181,82 @@ def export_scene_self_contained(task: str, out_dir: Path) -> int:
     return copied
 
 
+def verify_exported_policy(
+    expected: np.ndarray,
+    observations: np.ndarray,
+    out_dir: Path,
+    jit_atol: float = 1e-5,
+    onnx_atol: float = 1e-3,
+) -> dict[str, float]:
+    """Check the two written files reproduce the policy they came from.
+
+    ``expected`` holds the actions the in-memory policy produced for
+    ``observations``, one row each. Both files are loaded from disk exactly as
+    a deployment would load them and run on the same inputs.
+
+    The observations must come from a rollout rather than from zeros. A
+    zero observation is what the ONNX exporter traces with, so it is the one
+    input a mis-exported policy is most likely to get right, and checking only
+    that would pass on a policy that is wrong everywhere else.
+
+    ONNX gets a looser tolerance than TorchScript because it re-associates
+    float arithmetic; TorchScript runs the same kernels and should be exact.
+
+    Returns the worst difference seen for each file. Raises if either is over
+    tolerance -- an artifact that does not match is not a usable one.
+    """
+    import onnxruntime as ort
+
+    jit_policy = torch.jit.load(str(out_dir / "policy.pt"))
+    jit_policy.eval()
+    session = ort.InferenceSession(
+        str(out_dir / "policy.onnx"), providers=["CPUExecutionProvider"]
+    )
+
+    with torch.no_grad():
+        jit_out = jit_policy(torch.from_numpy(observations)).numpy()
+    # The graph is exported with a fixed batch dimension of one, so ONNX has
+    # to be fed a row at a time.
+    onnx_out = np.concatenate(
+        [session.run(None, {"obs": row[None]})[0] for row in observations]
+    )
+
+    deltas = {
+        "policy.pt": float(np.abs(expected - jit_out).max()),
+        "policy.onnx": float(np.abs(expected - onnx_out).max()),
+    }
+    for name, atol in (("policy.pt", jit_atol), ("policy.onnx", onnx_atol)):
+        if not deltas[name] <= atol:
+            raise RuntimeError(
+                f"{name} does not reproduce the trained policy: actions differ "
+                f"by up to {deltas[name]:.4g} over {len(observations)} "
+                f"observations, tolerance {atol:g}. The exported file is not "
+                f"the policy that was loaded; do not deploy it."
+            )
+    return deltas
+
+
+def _rollout_for_verification(runner, wrapped, device: str, steps: int = 8):
+    """Actions and observations from a short rollout of the loaded policy."""
+    policy = runner.get_inference_policy(device=device)
+    obs, _ = wrapped.reset()
+    observations, actions = [], []
+    with torch.no_grad():
+        for _ in range(steps):
+            observations.append(
+                torch.cat([obs[group] for group in policy.obs_groups], dim=-1)
+                .detach()
+                .cpu()
+            )
+            action = policy(obs)
+            actions.append(action.detach().cpu())
+            obs, _, _, _ = wrapped.step(action)
+    return (
+        torch.cat(actions).numpy().astype(np.float32),
+        torch.cat(observations).numpy().astype(np.float32),
+    )
+
+
 def export(task: str, checkpoint: str, out: str, device: str = "cpu") -> None:
     """Export the policy, its contract, and a self-contained scene."""
     out_dir = Path(out)
@@ -224,12 +305,20 @@ def export(task: str, checkpoint: str, out: str, device: str = "cpu") -> None:
         },
     }
     (out_dir / "policy_meta.json").write_text(json.dumps(meta, indent=2))
+
+    expected, observations = _rollout_for_verification(runner, wrapped, device)
+    deltas = verify_exported_policy(expected, observations, out_dir)
     env.close()
 
     copied = export_scene_self_contained(task, out_dir / "scene")
     model = mujoco.MjModel.from_xml_path(str(out_dir / "scene" / "scene.xml"))
     print(
         f"policy      {out_dir}/policy.onnx  ({meta['obs_dim']} obs, {meta['action_dim']} act)"
+    )
+    print(
+        f"verified    matches the loaded policy over {len(observations)} "
+        f"observations (policy.pt {deltas['policy.pt']:.2e}, "
+        f"policy.onnx {deltas['policy.onnx']:.2e})"
     )
     print(f"contract    {out_dir}/policy_meta.json")
     print(f"scene       {out_dir}/scene/scene.xml  ({copied} mesh files copied)")

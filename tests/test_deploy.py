@@ -87,3 +87,104 @@ def test_exported_scene_matches_the_mjlab_model(tmp_path, group):
             atol=1e-9,
         ), field
     env.close()
+
+
+def _tiny_policy(obs_dim: int = 12, action_dim: int = 4):
+    """A small MLPModel, exported the way the runner exports one."""
+    import torch
+    from rsl_rl.models import MLPModel
+    from tensordict import TensorDict
+
+    obs = TensorDict(
+        {"actor": torch.zeros(1, obs_dim), "critic": torch.zeros(1, obs_dim)},
+        batch_size=[1],
+    )
+    groups = {"actor": ["actor"], "critic": ["critic"]}
+    model = MLPModel(
+        obs,
+        groups,
+        "actor",
+        action_dim,
+        (16, 16),
+        "elu",
+        True,
+        {"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
+    )
+    model.eval()
+    return model
+
+
+def _write_exports(model, out_dir, obs_dim):
+    import torch
+
+    torch.jit.script(model.as_jit()).save(str(out_dir / "policy.pt"))
+    onnx_model = model.as_onnx(verbose=False)
+    onnx_model.eval()
+    torch.onnx.export(
+        onnx_model,
+        onnx_model.get_dummy_inputs(),
+        str(out_dir / "policy.onnx"),
+        export_params=True,
+        opset_version=18,
+        input_names=onnx_model.input_names,
+        output_names=onnx_model.output_names,
+    )
+
+
+def test_verify_accepts_an_export_that_matches(tmp_path):
+    """A faithful export round-trips through both files."""
+    import torch
+    from tensordict import TensorDict
+
+    from openarm_mjlab.deploy.export import verify_exported_policy
+
+    obs_dim = 12
+    model = _tiny_policy(obs_dim)
+    _write_exports(model, tmp_path, obs_dim)
+
+    torch.manual_seed(0)
+    observations = torch.randn(6, obs_dim)
+    with torch.no_grad():
+        expected = model(
+            TensorDict({"actor": observations, "critic": observations}, batch_size=[6])
+        )
+    deltas = verify_exported_policy(
+        expected.numpy().astype(np.float32),
+        observations.numpy().astype(np.float32),
+        tmp_path,
+    )
+    assert deltas["policy.pt"] <= 1e-5
+    assert deltas["policy.onnx"] <= 1e-3
+
+
+def test_verify_rejects_an_export_that_does_not_match(tmp_path):
+    """The guard has to fire when the file is not the policy it came from.
+
+    This is the failure it exists for: an export can be written successfully
+    and still compute something else, in which case nothing else in the
+    pipeline notices until the policy is driving hardware.
+    """
+    import torch
+    from tensordict import TensorDict
+
+    from openarm_mjlab.deploy.export import verify_exported_policy
+
+    obs_dim = 12
+    model = _tiny_policy(obs_dim)
+    _write_exports(model, tmp_path, obs_dim)
+
+    # Export one policy, then ask the check to reproduce a different one.
+    other = _tiny_policy(obs_dim)
+    torch.manual_seed(0)
+    observations = torch.randn(6, obs_dim)
+    with torch.no_grad():
+        wrong = other(
+            TensorDict({"actor": observations, "critic": observations}, batch_size=[6])
+        )
+
+    with pytest.raises(RuntimeError, match="does not reproduce the trained policy"):
+        verify_exported_policy(
+            wrong.numpy().astype(np.float32),
+            observations.numpy().astype(np.float32),
+            tmp_path,
+        )
