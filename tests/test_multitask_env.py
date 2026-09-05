@@ -153,3 +153,87 @@ def test_config_points_at_the_multitask_classes():
         module_path, _, attr = path.rpartition(".")
         resolved = getattr(importlib.import_module(module_path), attr)
         assert resolved is expected, path
+
+
+def _build_model(head_hidden: int = 0):
+    """A MultiHeadMLPModel with deliberately distinct heads.
+
+    The heads a fresh model gets are near-identical, so a wrong head would
+    still produce nearly the right numbers and the test would pass on broken
+    code. Offsetting each head makes picking the wrong one unmistakable.
+    """
+    from tensordict import TensorDict
+
+    from openarm_mjlab.tasks.multitask.multihead_model import MultiHeadMLPModel
+
+    obs_dim = OBS_DIM
+    obs = TensorDict(
+        {"actor": torch.zeros(1, obs_dim), "critic": torch.zeros(1, obs_dim)},
+        batch_size=[1],
+    )
+    groups = {"actor": ["actor"], "critic": ["critic"]}
+    model = MultiHeadMLPModel(
+        obs,
+        groups,
+        "actor",
+        8,
+        (64, 64),
+        "elu",
+        True,
+        {"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
+    )
+    model.eval()
+    for offset, head in enumerate(model.mlp.heads):
+        for param in head.parameters():
+            param.data.add_(float(offset))
+    return model
+
+
+def test_exported_policy_selects_the_head_the_one_hot_asks_for():
+    """The head must be chosen inside the exported graph, not at trace time.
+
+    rsl_rl's export wrappers skip ``get_latent``, which is the only place the
+    task one-hot is read. Without an override, ``torch.jit.trace`` bakes in the
+    index its tracing input produced -- an all-zero observation, so head 0 --
+    and every exported policy runs reach's head whatever task it is given.
+    """
+    from tensordict import TensorDict
+
+    model = _build_model()
+    exported = torch.jit.trace(model.as_jit(), torch.zeros(1, OBS_DIM))
+
+    torch.manual_seed(0)
+    core = torch.randn(4, OBS_DIM - NUM_TASKS)
+    for index, name in enumerate(mdp.TASK_NAMES):
+        raw = torch.cat([core, torch.zeros(4, NUM_TASKS)], dim=-1)
+        raw[:, OBS_DIM - NUM_TASKS + index] = 1.0
+        obs = TensorDict({"actor": raw, "critic": raw}, batch_size=[4])
+        with torch.no_grad():
+            eager = model(obs)
+            traced = exported(raw)
+        assert torch.allclose(eager, traced, atol=1e-5), (
+            f"{name}: exported policy disagrees with the eager model by "
+            f"{(eager - traced).abs().max().item():.4f} -- it is running a "
+            "different task's head"
+        )
+
+
+def test_onnx_export_wrapper_selects_the_head_too():
+    """The ONNX path needs the same treatment as the JIT path."""
+    from tensordict import TensorDict
+
+    model = _build_model()
+    onnx_model = model.as_onnx(verbose=False)
+    (dummy,) = onnx_model.get_dummy_inputs()
+    assert dummy.shape == (1, OBS_DIM)
+    assert onnx_model.input_names == ["obs"]
+    assert onnx_model.output_names == ["actions"]
+
+    torch.manual_seed(0)
+    core = torch.randn(4, OBS_DIM - NUM_TASKS)
+    for index, name in enumerate(mdp.TASK_NAMES):
+        raw = torch.cat([core, torch.zeros(4, NUM_TASKS)], dim=-1)
+        raw[:, OBS_DIM - NUM_TASKS + index] = 1.0
+        obs = TensorDict({"actor": raw, "critic": raw}, batch_size=[4])
+        with torch.no_grad():
+            assert torch.allclose(model(obs), onnx_model(raw), atol=1e-5), name

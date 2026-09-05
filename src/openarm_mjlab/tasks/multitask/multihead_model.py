@@ -33,9 +33,19 @@ machinery of EWC, for which rsl_rl exposes no hooks.
 Only two things are overridden on ``MLPModel``: ``get_latent`` reads the task
 one-hot from the RAW observation before normalization, and ``mlp`` is wrapped
 so the final layer becomes one head per task.
+
+Export needs a third. ``get_latent`` is where the head is chosen, and rsl_rl's
+JIT and ONNX wrappers do not call it -- they run ``obs_normalizer`` and then
+``mlp`` directly. A traced copy therefore has no way to read the one-hot, and
+``torch.jit.trace`` freezes whatever index the tracing input happened to
+produce, so every exported policy runs the head of the task that was traced
+regardless of the observation it is given. ``as_jit`` and ``as_onnx`` below
+return wrappers that select the head inside the graph instead.
 """
 
 from __future__ import annotations
+
+import copy
 
 import torch
 from rsl_rl.models import MLPModel
@@ -120,3 +130,79 @@ class MultiHeadMLPModel(MLPModel):
         if raw.shape[-1] >= NUM_TASKS:
             self.task_index = raw[..., -NUM_TASKS:].argmax(dim=-1)
         return self.obs_normalizer(raw)
+
+    def as_jit(self) -> nn.Module:
+        """Return a TorchScript-compatible copy that selects its own head."""
+        return _TorchMultiHeadModel(self)
+
+    def as_onnx(self, verbose: bool) -> nn.Module:
+        """Return an ONNX-compatible copy that selects its own head."""
+        return _OnnxMultiHeadModel(self, verbose)
+
+
+class _ExportMultiHead(nn.Module):
+    """Deployment copy of the model, with head selection inside the graph.
+
+    The base wrappers in rsl_rl call ``obs_normalizer`` and then ``mlp``,
+    bypassing ``get_latent`` and so bypassing the only place the task one-hot
+    is read. This does the same work on the raw observation tensor, so the
+    argmax becomes a node in the traced graph rather than a Python value
+    captured at trace time.
+    """
+
+    def __init__(self, model: MultiHeadMLPModel) -> None:
+        super().__init__()
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        multi_head = model.mlp
+        self.trunk = copy.deepcopy(multi_head.trunk)
+        self.heads = copy.deepcopy(multi_head.heads)
+        if model.distribution is not None:
+            self.deterministic_output = (
+                model.distribution.as_deterministic_output_module()
+            )
+        else:
+            self.deterministic_output = nn.Identity()
+        self.input_size = model.obs_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run deterministic inference on pre-concatenated observations."""
+        index = x[..., -NUM_TASKS:].argmax(dim=-1)
+        latent = self.trunk(self.obs_normalizer(x))
+        stacked = torch.stack([head(latent) for head in self.heads], dim=1)
+        gathered = stacked.gather(
+            1, index.view(-1, 1, 1).expand(-1, 1, stacked.shape[-1])
+        )
+        return self.deterministic_output(gathered.squeeze(1))
+
+
+class _TorchMultiHeadModel(_ExportMultiHead):
+    """Exportable multi-head model for JIT."""
+
+    @torch.jit.export
+    def reset(self) -> None:
+        """Reset recurrent export state (no-op for MLP exports)."""
+        pass
+
+
+class _OnnxMultiHeadModel(_ExportMultiHead):
+    """Exportable multi-head model for ONNX."""
+
+    is_recurrent: bool = False
+
+    def __init__(self, model: MultiHeadMLPModel, verbose: bool) -> None:
+        super().__init__(model)
+        self.verbose = verbose
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor]:
+        """Return representative dummy inputs for ONNX tracing."""
+        return (torch.zeros(1, self.input_size),)
+
+    @property
+    def input_names(self) -> list[str]:
+        """Return ONNX input tensor names."""
+        return ["obs"]
+
+    @property
+    def output_names(self) -> list[str]:
+        """Return ONNX output tensor names."""
+        return ["actions"]
