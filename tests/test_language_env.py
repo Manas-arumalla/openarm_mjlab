@@ -558,3 +558,27 @@ def test_build_says_what_to_install_when_the_encoder_is_absent(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", blocked)
     with pytest.raises(ImportError, match=r"openarm-mjlab\[language\]"):
         embeddings.build()
+
+
+def test_every_declared_console_script_resolves():
+    """A typo in pyproject.toml only shows up when a user runs the command.
+
+    The entry points are the documented way in, so a bad module path or a
+    renamed function is a broken front door that no other test touches.
+    """
+    import importlib
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    with (root / "pyproject.toml").open("rb") as fh:
+        scripts = tomllib.load(fh)["project"]["scripts"]
+
+    language = {n: t for n, t in scripts.items() if ".tasks.language." in t}
+    assert language, "no language console scripts declared"
+    for name, target in language.items():
+        module_path, _, func = target.partition(":")
+        module = importlib.import_module(module_path)
+        assert callable(getattr(module, func, None)), (
+            f"{name} -> {target} is not callable"
+        )

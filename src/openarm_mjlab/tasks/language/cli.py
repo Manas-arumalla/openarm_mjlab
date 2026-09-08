@@ -29,15 +29,36 @@ openarm-mjlab-lang-eval
     twice -- once shown its own instruction, once shown the other's -- and
     reports execution and suppression separately, because they fail for
     opposite reasons.
+
+openarm-mjlab-lang-play
+    Watch it. Opens the viewer, alternates the instruction, and prints each
+    sentence as it changes, so the claim can be checked by eye rather than
+    taken from a table.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import random
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
 TASK_ID = "OpenArm-Puck-Language"
+
+# Typed into the terminal, NOT pressed in the viewer window. MuJoCo binds
+# every letter A-Z to a visualization toggle and every digit to a geom group,
+# and mjlab binds more on top, so a viewer keybinding here would silently do
+# two things at once -- pressing "h" would draw convex hulls, "n" would
+# recolour the limbs by constraint island, "2" would hide the robot's visual
+# meshes entirely. All of those look like bugs. stdin has no such conflict.
+PLAY_HELP = """
+  type into this terminal and press Enter:
+    l = push left    t = train phrasings     a = toggle auto-switching
+    r = push right   h = held-out phrasings  q = quit
+    n = same goal, new phrasing
+"""
 
 
 def _build_env(num_envs: int, table_path: Path | None, device: str, seed: int):
@@ -183,3 +204,119 @@ def evaluate() -> None:
         for sentence, hit, miss in result.per_sentence:
             mark = "ok  " if hit > miss else ("tie " if hit == miss else "MISS")
             print(f"  [{mark}] {hit:.2f} vs {miss:.2f}  {sentence!r}")
+
+
+def play() -> None:
+    """Watch a trained policy follow instructions, and change them live."""
+    import threading
+
+    import torch
+    from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+    from mjlab.tasks.registry import load_rl_cfg
+    from mjlab.viewer import NativeMujocoViewer
+
+    from openarm_mjlab.tasks.language import instructions
+
+    parser = argparse.ArgumentParser(
+        prog="openarm-mjlab-lang-play",
+        description="Watch the policy follow instructions.",
+    )
+    parser.add_argument("checkpoint")
+    parser.add_argument("--table", default=None, help="instruction embedding table")
+    parser.add_argument("--split", default="held_out", choices=["held_out", "train"])
+    parser.add_argument("--num-envs", type=int, default=1)
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--switch-every",
+        type=int,
+        default=300,
+        help="policy steps between automatic goal switches; 0 disables",
+    )
+    args = parser.parse_args()
+
+    _, env = _build_env(
+        args.num_envs, Path(args.table) if args.table else None, args.device, args.seed
+    )
+    env.instruction_split = args.split
+    env.instruction_shown = None  # show each goal its OWN sentence
+
+    agent_cfg = load_rl_cfg(TASK_ID)
+    wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    runner = MjlabOnPolicyRunner(wrapped, asdict(agent_cfg), device=args.device)
+    runner.load(
+        args.checkpoint, load_cfg={"actor": True}, strict=True, map_location=args.device
+    )
+    inner = runner.get_inference_policy(device=args.device)
+
+    rng = random.Random(args.seed)
+    lock = threading.Lock()
+    state = {"pending": {}, "auto": args.switch_every > 0, "calls": 0}
+
+    def apply(goal: str | None, split: str | None) -> None:
+        if goal is not None:
+            env.instruction_goal = goal
+        if split is not None:
+            env.instruction_split = split
+        goal_now = env.instruction_goal
+        split_now = env.instruction_split
+        pool = (
+            instructions.TRAIN[goal_now]
+            if split_now == "train"
+            else instructions.HELD_OUT[goal_now]
+        )
+        start = rng.randrange(len(pool))
+        env.instruction_phrase_index = (
+            torch.arange(args.num_envs, device=args.device) + start
+        ) % len(pool)
+        print(
+            f'  {goal_now.upper():<5s} [{split_now:8s}] "{pool[start]}"',
+            flush=True,
+        )
+        # Resample every env now rather than waiting for each to time out:
+        # the point is to watch the arm change its mind.
+        env.reset()
+
+    def policy(obs):
+        with lock:
+            pending = dict(state["pending"])
+            state["pending"].clear()
+            auto = state["auto"]
+        if pending:
+            apply(pending.get("goal"), pending.get("split"))
+            state["calls"] = 0
+        elif auto:
+            state["calls"] += 1
+            if state["calls"] >= args.switch_every:
+                state["calls"] = 0
+                here = env.instruction_goal
+                apply(next(g for g in instructions.GOALS if g != here), None)
+        return inner(obs)
+
+    def reader() -> None:
+        for line in sys.stdin:
+            c = line.strip().lower()[:1]
+            with lock:
+                if c == "l":
+                    state["pending"]["goal"] = "left"
+                elif c == "r":
+                    state["pending"]["goal"] = "right"
+                elif c == "n":
+                    state["pending"]["goal"] = env.instruction_goal
+                elif c == "t":
+                    state["pending"]["split"] = "train"
+                elif c == "h":
+                    state["pending"]["split"] = "held_out"
+                elif c == "a":
+                    state["auto"] = not state["auto"]
+                    print(f"  [auto {'on' if state['auto'] else 'off'}]", flush=True)
+                elif c == "q":
+                    os._exit(0)
+
+    threading.Thread(target=reader, daemon=True).start()
+    apply(instructions.GOALS[0], args.split)
+    print(PLAY_HELP, flush=True)
+    try:
+        NativeMujocoViewer(env, policy).run()
+    finally:
+        env.close()

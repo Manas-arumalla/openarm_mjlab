@@ -40,6 +40,7 @@ Repository = "https://github.com/enactic/openarm_mjlab"
 openarm-mjlab-build-instructions = "openarm_mjlab.tasks.language.embeddings:main"
 openarm-mjlab-lang-check = "openarm_mjlab.tasks.language.cli:check"
 openarm-mjlab-lang-eval = "openarm_mjlab.tasks.language.cli:evaluate"
+openarm-mjlab-lang-play = "openarm_mjlab.tasks.language.cli:play"
 openarm-mjlab-play = "openarm_mjlab.play:main"
 openarm-mjlab-train = "openarm_mjlab.train:main"
 
