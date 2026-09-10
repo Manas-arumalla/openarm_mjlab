@@ -86,8 +86,13 @@ def check() -> None:
         description="Offline checks to run before training. No GPU needed.",
     )
     parser.add_argument("--table", default=None, help="instruction embedding table")
-    parser.add_argument("--num-envs", type=int, default=64)
-    parser.add_argument("--resets", type=int, default=6)
+    # 64 x 6 = 384 samples is too few to answer this question: the standard
+    # error on a proportion near 0.5 is then ~0.026, and a measured run gave
+    # 0.598 -- which cleared the 0.10 margin below by 0.002 while printing
+    # "at chance". The same environment measures 0.503 at 3072 samples. The
+    # default is therefore sized so the estimate is stable, not so it is fast.
+    parser.add_argument("--num-envs", type=int, default=256)
+    parser.add_argument("--resets", type=int, default=12)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--skip-observation",
@@ -127,11 +132,23 @@ def check() -> None:
         )
     finally:
         env.close()
-    print(f"     observation -> goal  {accuracy:.3f}   (chance {chance:.3f})")
-    if accuracy > chance + 0.10:
+    margin = accuracy - chance
+    n = args.num_envs * args.resets
+    stderr = (0.25 / n) ** 0.5
+    print(
+        f"     observation -> goal  {accuracy:.3f}   (chance {chance:.3f}, "
+        f"{n} samples, standard error {stderr:.3f})"
+    )
+    if margin > 0.10:
         print("     -> the observation gives the goal away, so a policy that")
         print("        ignores language still scores full marks. Any")
         print("        instruction-following result from this task is vacuous.")
+    elif margin > 3 * stderr:
+        # Don't call this "at chance" -- it is above chance by more than
+        # sampling noise explains, even though it clears the margin above.
+        print(f"     -> {margin:+.3f} above chance, more than sampling noise")
+        print("        explains. Under the 0.10 bar, but re-run with more")
+        print("        samples before relying on it.")
     else:
         print("     -> at chance: language is the only route. Good.")
 
