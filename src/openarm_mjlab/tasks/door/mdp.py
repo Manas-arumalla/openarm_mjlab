@@ -26,13 +26,28 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.utils.lab_api.math import quat_apply, quat_inv
 
-from ...common_mdp import fingers_on_handle
-from ...robot_bimanual import GRASP_LOCAL_OFFSET
+from ...common_mdp import (
+    contact_reward,
+    ee_to_target,
+    fingers_on_handle,
+    fingers_on_handle_obs,
+    reach_target_reward,
+    terminated_by,
+)
+
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
+
+__all__ = [
+    "contact_reward",
+    "ee_to_target",
+    "fingers_on_handle",
+    "fingers_on_handle_obs",
+    "reach_target_reward",
+    "terminated_by",
+]
 
 TARGET_SWING = 1.0  # rad (57.3 deg; classical weld-assisted: 53.7 deg)
 MAX_SWING_RATE = 1.0  # rad/s
@@ -48,47 +63,6 @@ def door_rate(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor
     """Return the door hinge angular velocity, rad/s."""
     door: Entity = env.scene[asset_cfg.name]
     return door.data.joint_vel[:, asset_cfg.joint_ids].squeeze(-1)
-
-
-def ee_to_handle(
-    env: ManagerBasedRlEnv,
-    robot_cfg: SceneEntityCfg,
-    handle_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Return the vector from the finger-cage center to the door handle, base frame."""
-    robot: Entity = env.scene[robot_cfg.name]
-    door: Entity = env.scene[handle_cfg.name]
-    ee_pos_w = robot.data.site_pos_w[:, robot_cfg.site_ids].squeeze(1)
-    ee_quat_w = robot.data.site_quat_w[:, robot_cfg.site_ids].squeeze(1)
-    offset = torch.tensor(GRASP_LOCAL_OFFSET, device=ee_pos_w.device).expand_as(
-        ee_pos_w
-    )
-    tool_pos_w = ee_pos_w + quat_apply(ee_quat_w, offset)
-    handle_pos_w = door.data.site_pos_w[:, handle_cfg.site_ids].squeeze(1)
-    vec_w = handle_pos_w - tool_pos_w
-    base_quat_w = robot.data.root_link_quat_w
-    return quat_apply(quat_inv(base_quat_w), vec_w)
-
-
-def reach_handle_reward(
-    env: ManagerBasedRlEnv,
-    std: float,
-    robot_cfg: SceneEntityCfg,
-    handle_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Return a Gaussian-shaped reward on distance from the tool to the handle."""
-    d2 = torch.sum(torch.square(ee_to_handle(env, robot_cfg, handle_cfg)), dim=-1)
-    return torch.exp(-d2 / std**2)
-
-
-def handle_contact_reward(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
-    """Return a dense reward for holding the handle in contact."""
-    return fingers_on_handle(env, sensor_name).float()
-
-
-def handle_contact_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
-    """Return the observation wrapper for handle contact."""
-    return fingers_on_handle(env, sensor_name).float().unsqueeze(-1)
 
 
 def _start_angle(env) -> torch.Tensor:
@@ -188,11 +162,6 @@ def overspeed_penalty(
 ) -> torch.Tensor:
     """Return a penalty for swinging faster than ``MAX_SWING_RATE``."""
     return torch.clamp(door_rate(env, asset_cfg).abs() - MAX_SWING_RATE, min=0.0)
-
-
-def swing_success_bonus(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """Fire exactly once, on the success-termination step."""
-    return env.termination_manager.get_term("swung_target").float()
 
 
 def swung_target(

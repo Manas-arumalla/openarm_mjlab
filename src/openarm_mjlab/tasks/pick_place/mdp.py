@@ -22,9 +22,14 @@ import torch
 
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
+from ...common_mdp import terminated_by
+
+
 if TYPE_CHECKING:
     from mjlab.entity import Entity
     from mjlab.envs import ManagerBasedRlEnv
+
+__all__ = ["terminated_by"]
 
 # _target_pos_w is on the hot path (2 observation terms + the transport
 # reward each step); cache the constant offset tensor per (value, device)
@@ -123,16 +128,6 @@ def object_in_tray(
     in_xy = (delta[:, :2].abs() < xy_tolerance).all(dim=-1)
     low = delta[:, 2] < max_height_above_tray
     return in_xy & low
-
-
-def terminated_by(env: ManagerBasedRlEnv, term_name: str) -> torch.Tensor:
-    """1.0 on the step the named termination term fires.
-
-    Terminations are computed before rewards each step, so the manager's
-    cached result is current; referencing it keeps the reward and the
-    termination condition structurally identical.
-    """
-    return env.termination_manager.get_term(term_name).float()
 
 
 ##
