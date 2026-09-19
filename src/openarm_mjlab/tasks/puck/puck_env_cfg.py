@@ -134,10 +134,10 @@ def openarm_puck_env_cfg(
     """Build the OpenArm move-puck environment config.
 
     With ``vision=True``, the actor loses the privileged puck-position
-    observation terms and instead relies on a fixed overhead depth
-    camera; the critic (discarded at deployment) keeps full privileged
-    state and also gets the camera, the same asymmetric actor-critic
-    pattern mjlab's own vision reference task uses.
+    and contact observation terms and instead relies on a fixed overhead
+    depth camera; the critic (discarded at deployment) keeps full
+    privileged state and also gets the camera, the same asymmetric
+    actor-critic pattern mjlab's own vision reference task uses.
     """
     actor_terms = {
         "joint_pos": ObservationTermCfg(
@@ -157,7 +157,7 @@ def openarm_puck_env_cfg(
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "push_contact": ObservationTermCfg(
-            func=puck_mdp.push_contact_obs,
+            func=puck_mdp.fingers_on_handle_obs,
             params={"sensor_name": "finger_puck_contact"},
         ),
         "actions": ObservationTermCfg(func=base_mdp.last_action),
@@ -246,7 +246,9 @@ def openarm_puck_env_cfg(
             func=puck_mdp.at_goal_reward, weight=2.0, params={"asset_cfg": PUCK_CFG}
         ),
         "success": RewardTermCfg(
-            func=puck_mdp.push_success_bonus, weight=800.0, params={}
+            func=puck_mdp.terminated_by,
+            weight=800.0,
+            params={"term_name": "puck_at_goal"},
         ),
         "puck_overspeed": RewardTermCfg(
             func=puck_mdp.puck_overspeed_penalty,
@@ -258,7 +260,9 @@ def openarm_puck_env_cfg(
         # future dense income, too weak a deterrent once training drifts
         # toward a faster, more aggressive push.
         "puck_fell": RewardTermCfg(
-            func=puck_mdp.puck_fell_penalty, weight=-400.0, params={}
+            func=puck_mdp.terminated_by,
+            weight=-400.0,
+            params={"term_name": "puck_fell"},
         ),
         "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.01),
         "joint_vel_hinge": RewardTermCfg(
@@ -370,6 +374,11 @@ def openarm_puck_env_cfg(
         actor_obs = cfg.observations["actor"]
         actor_obs.terms.pop("tool_to_puck")
         actor_obs.terms.pop("puck_to_goal")
+        # The contact flag comes from a simulator contact sensor that the
+        # real gripper cannot produce, so it is privileged too: the vision
+        # actor has to infer contact from the depth image. The critic keeps
+        # it.
+        actor_obs.terms.pop("push_contact")
     if play:
         cfg.episode_length_s = int(1e9)
         cfg.observations["actor"].enable_corruption = False
