@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Environment configuration for the OpenArm valve-turning task.
+"""Environment configuration for the OpenArm door-swing task.
 
-Fixture geometry: pipe base, hinged hub + lever, vertical grip cylinder at
-the lever tip. A rotary task, so the arm-branch depth wall that constrains
-the drawer task does not apply here.
+Cage the vertical handle bar and swing the door. Classical baseline: 53.7
+deg (weld-assisted). Target: 1.0 rad (57.3 deg), contact-only.
 """
 
 import mujoco
@@ -45,74 +44,107 @@ from ...robot_bimanual import (
     EE_SITE_RIGHT,
     get_bimanual_robot_cfg,
 )
-from ...common_mdp import fingers_on_handle_obs
-from . import mdp as valve_mdp
+from . import mdp as door_mdp
 
-VALVE_POS = (0.25, 0.0, 0.40)
-_TABLE_REL_POS = (0.47 - VALVE_POS[0], 0.0, 0.36 - VALVE_POS[2])
+DOOR_POS = (0.29, -0.10, 0.40)
+
+# Rounds 1-3 lesson: the approach phase is an exploration cliff (the light
+# door flees from any touch; the 7 mm bar is never caged by accident in 768
+# episodes). Episodes therefore START CAGED: the task's home pose is a
+# DLS-IK solution (residual 0.07 mm) placing the finger-cage point at the
+# resting handle, fingers open around the bar. Re-solved 2026-08-28
+# when the handle was moved 30mm proud of the panel face: this pose is
+# IK'd to the handle, so it had to move with it (it was ~40mm off
+# otherwise). Position AND orientation solved (0.002mm / 0.000deg),
+# keeping the previous wrist orientation so only the standoff changed. Comparable to the classical
+# skill, which is also staged to its grasp by a scripted approach.
+# Zero-action HOLDS this pose (position actions offset from the default).
+CAGED_HOME = EntityCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.0),
+    joint_pos={
+        "openarm_right_joint1": -0.4154,
+        "openarm_right_joint2": -0.0994,
+        "openarm_right_joint3": -0.2940,
+        "openarm_right_joint4": 1.8242,
+        "openarm_right_joint5": -0.1300,
+        "openarm_right_joint6": -0.0327,
+        "openarm_right_joint7": 0.0081,
+        "openarm_right_finger_joint[12]": -0.25,
+        "openarm_left_joint4": 1.5708,
+        "openarm_left_joint[12356]": 0.0,
+        "openarm_left_joint7": 0.0,
+        "openarm_left_finger_joint[12]": 0.0,
+    },
+    joint_vel={".*": 0.0},
+)
 
 
-def get_valve_spec() -> mujoco.MjSpec:
-    """Build the pipe + hinged-lever valve fixture spec."""
+def get_door_robot_cfg() -> EntityCfg:
+    """Return the bimanual robot config, homed to the door's caged grasp."""
+    cfg = get_bimanual_robot_cfg()
+    cfg.init_state = CAGED_HOME
+    return cfg
+
+
+def get_door_spec() -> mujoco.MjSpec:
+    """Build the post + hinged-panel door fixture spec."""
     spec = mujoco.MjSpec()
-    spec.modelname = "valve_fixture"
-    # Programmatic MjSpec defaults to degrees: without this, the hinge
-    # range (-3, 3) compiles to +-3 degrees, not +-3 rad.
+    spec.modelname = "door_fixture"
     spec.compiler.degree = False
-
-    base = spec.worldbody.add_body(name="valve_base")
+    base = spec.worldbody.add_body(name="door_base")
     base.add_geom(
         name="table_top",
         type=mujoco.mjtGeom.mjGEOM_BOX,
         size=(0.41, 0.55, 0.04),
-        pos=_TABLE_REL_POS,
+        pos=(0.47 - DOOR_POS[0], -DOOR_POS[1], 0.36 - DOOR_POS[2]),
         rgba=(0.82, 0.71, 0.55, 1.0),
         friction=(1.0, 0.005, 0.0001),
     )
     base.add_geom(
-        name="valve_pipe",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        size=(0.015, 0.0275, 0),
-        pos=(0, 0, 0.0275),
+        name="door_post",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=(0.007, 0.007, 0.06),
+        pos=(0, -0.07, 0.06),
         rgba=(0.4, 0.4, 0.45, 1.0),
         friction=(1.0, 0.01, 0.01),
     )
-
-    valve = base.add_body(name="valve", pos=(0, 0, 0.065))
-    valve.add_joint(
-        name="valve_turn",
+    door = base.add_body(name="door", pos=(0, -0.07, 0.06))
+    door.add_joint(
+        name="door_hinge",
         type=mujoco.mjtJoint.mjJNT_HINGE,
         axis=(0, 0, 1),
-        range=(-3.0, 3.0),
-        damping=0.5,
-        frictionloss=0.05,
+        range=(0.0, 1.4),
+        damping=0.2,
+        frictionloss=0.02,
     )
-    valve.add_geom(
-        name="valve_hub",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=(0, 0, -0.006, 0, 0, 0.006),
-        size=(0.014, 0, 0),
-        mass=0.05,
-        rgba=(0.3, 0.3, 0.35, 1.0),
-    )
-    valve.add_geom(
-        name="valve_lever",
+    door.add_geom(
+        name="door_panel",
         type=mujoco.mjtGeom.mjGEOM_BOX,
-        size=(0.035, 0.008, 0.006),
-        pos=(0.035, 0, 0),
-        mass=0.05,
-        rgba=(0.7, 0.2, 0.2, 1.0),
+        size=(0.006, 0.06, 0.05),
+        pos=(0, 0.075, 0),
+        mass=0.08,
+        rgba=(0.55, 0.45, 0.3, 1.0),
     )
-    valve.add_geom(
-        name="valve_grip",
+    # The handle stands 30 mm PROUD of the panel face on two short posts,
+    # the same arrangement the drawer fixture uses. It was previously a
+    # cylinder centred inside the panel: with panel half-thickness 0.006 and
+    # handle radius 0.007 it protruded just 1.0 mm from each face and its
+    # z-range lay entirely within the panel, so a parallel gripper could not
+    # close around it and the contact gate could be satisfied by pressing
+    # the panel rather than caging the bar. The robot base is at x=0 and the
+    # door at x=0.29, so the near face is door-local x=-0.006 and the handle
+    # stands off toward the robot. y is left at 0.13 so the hinge moment arm
+    # -- and therefore the task's difficulty -- is unchanged.
+    door.add_geom(
+        name="door_handle",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=(0.062, 0, -0.02, 0.062, 0, 0.02),
+        fromto=(-0.036, 0.13, -0.025, -0.036, 0.13, 0.025),
         size=(0.007, 0, 0),
         mass=0.02,
         rgba=(0.2, 0.2, 0.22, 1.0),
         # The right-arm finger collision geoms are priority=1, so a
-        # default-priority grip is outranked and their parameters govern
-        # every fingertip contact -- which left dr_grip_friction below
+        # default-priority handle is outranked and their parameters govern
+        # every fingertip contact -- which left dr_handle_friction below
         # randomizing a value MuJoCo never read (measured: effective mu
         # stayed 1.0 across the whole 0.6-1.4 range). priority=2 puts this
         # geom above them, so its own friction, and the randomization
@@ -124,30 +156,39 @@ def get_valve_spec() -> mujoco.MjSpec:
         friction=(1.0, 0.01, 0.01),
         solref=(0.005, 1.0),
     )
-    valve.add_site(name="grip_site", pos=(0.062, 0, 0), size=(0.005, 0, 0))
+    for z in (-0.02, 0.02):
+        door.add_geom(
+            name=f"door_handle_post_{'hi' if z > 0 else 'lo'}",
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            fromto=(-0.006, 0.13, z, -0.036, 0.13, z),
+            size=(0.004, 0, 0),
+            mass=0.005,
+            rgba=(0.2, 0.2, 0.22, 1.0),
+        )
+    door.add_site(name="handle_site", pos=(-0.036, 0.13, 0), size=(0.005, 0, 0))
     return spec
 
 
 ROBOT_EE_CFG = SceneEntityCfg("robot", site_names=(EE_SITE_RIGHT,))
-VALVE_JOINT_CFG = SceneEntityCfg("valve", joint_names=("valve_turn",))
-VALVE_GRIP_CFG = SceneEntityCfg("valve", site_names=("grip_site",))
+DOOR_JOINT_CFG = SceneEntityCfg("door", joint_names=("door_hinge",))
+DOOR_HANDLE_CFG = SceneEntityCfg("door", site_names=("handle_site",))
 
-FINGER_GRIP_SENSOR = ContactSensorCfg(
+FINGER_DOOR_SENSOR = ContactSensorCfg(
     name="finger_grip_contact",
     primary=ContactMatch(
         mode="body",
         pattern=r"openarm_right_ee_(inner|outer)_finger",
         entity="robot",
     ),
-    secondary=ContactMatch(mode="geom", pattern="valve_grip", entity="valve"),
+    secondary=ContactMatch(mode="geom", pattern="door_handle", entity="door"),
     fields=("found",),
     reduce="none",
     num_slots=1,
 )
 
 
-def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """Build the OpenArm valve-turning environment config."""
+def openarm_door_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """Build the OpenArm door-swing environment config."""
     actor_terms = {
         "joint_pos": ObservationTermCfg(
             func=base_mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01)
@@ -155,18 +196,18 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "joint_vel": ObservationTermCfg(
             func=base_mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5)
         ),
-        "valve_angle": ObservationTermCfg(
+        "door_angle": ObservationTermCfg(
             func=base_mdp.joint_pos_rel,
-            params={"asset_cfg": VALVE_JOINT_CFG},
+            params={"asset_cfg": DOOR_JOINT_CFG},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "ee_to_grip": ObservationTermCfg(
-            func=valve_mdp.ee_to_target,
-            params={"robot_cfg": ROBOT_EE_CFG, "target_cfg": VALVE_GRIP_CFG},
+        "ee_to_handle": ObservationTermCfg(
+            func=door_mdp.ee_to_target,
+            params={"robot_cfg": ROBOT_EE_CFG, "target_cfg": DOOR_HANDLE_CFG},
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
-        "grip_contact": ObservationTermCfg(
-            func=fingers_on_handle_obs,
+        "handle_contact": ObservationTermCfg(
+            func=door_mdp.fingers_on_handle_obs,
             params={"sensor_name": "finger_grip_contact"},
         ),
         "actions": ObservationTermCfg(func=base_mdp.last_action),
@@ -199,67 +240,61 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
             },
         ),
-        "reset_valve": EventTermCfg(
+        "reset_door": EventTermCfg(
             func=base_mdp.reset_joints_by_offset,
             mode="reset",
             params={
-                "position_range": (-0.3, 0.3),
+                "position_range": (0.0, 0.05),
                 "velocity_range": (0.0, 0.0),
-                "asset_cfg": SceneEntityCfg("valve", joint_names=(".*",)),
+                "asset_cfg": SceneEntityCfg("door", joint_names=(".*",)),
             },
         ),
-        "record_valve_start": EventTermCfg(
-            func=valve_mdp.record_valve_start,
+        "record_door_start": EventTermCfg(
+            func=door_mdp.record_door_start,
             mode="reset",
-            params={"asset_cfg": VALVE_JOINT_CFG},
+            params={"asset_cfg": DOOR_JOINT_CFG},
         ),
-        # Domain randomization: each of the N parallel envs draws ONE fixed
-        # value at startup that persists its whole training life, matching
-        # mjlab's own reference convention (tasks/manipulation/
-        # lift_cube_env_cfg.py's fingertip_friction_* events). Ranges are
-        # proportional (operation="scale") and deliberately modest
-        # (roughly +-20-40%): the goal is to certify robustness, not make
-        # the task harder.
-        "dr_grip_friction": EventTermCfg(
+        # Domain randomization, same pattern verified on valve: mode="startup"
+        # (each of the N parallel envs draws ONE fixed value for its whole
+        # training life), proportional ranges (operation="scale"), modest
+        # magnitude (roughly +-20-40%) to certify robustness rather than
+        # make the task harder.
+        "dr_handle_friction": EventTermCfg(
             mode="startup",
             func=dr.geom_friction,
             params={
-                "asset_cfg": SceneEntityCfg("valve", geom_names=("valve_grip",)),
+                "asset_cfg": SceneEntityCfg("door", geom_names=("door_handle",)),
                 "operation": "scale",
                 "distribution": "uniform",
                 "axes": [0],
                 "ranges": (0.6, 1.4),
             },
         ),
-        "dr_valve_joint_dynamics": EventTermCfg(
+        "dr_door_joint_friction": EventTermCfg(
             mode="startup",
             func=dr.joint_friction,
             params={
-                "asset_cfg": VALVE_JOINT_CFG,
+                "asset_cfg": DOOR_JOINT_CFG,
                 "operation": "scale",
                 "distribution": "uniform",
                 "ranges": (0.5, 2.0),
             },
         ),
-        "dr_valve_joint_damping": EventTermCfg(
+        "dr_door_joint_damping": EventTermCfg(
             mode="startup",
             func=dr.joint_damping,
             params={
-                "asset_cfg": VALVE_JOINT_CFG,
+                "asset_cfg": DOOR_JOINT_CFG,
                 "operation": "scale",
                 "distribution": "uniform",
                 "ranges": (0.5, 2.0),
             },
         ),
-        "dr_valve_mass": EventTermCfg(
+        "dr_door_mass": EventTermCfg(
             mode="startup",
             func=dr.pseudo_inertia,
             params={
-                "asset_cfg": SceneEntityCfg("valve", body_names=("valve",)),
-                # alpha_range=(-0.1, 0.1): mass/inertia scale by e^(2*alpha),
-                # roughly 0.82x-1.22x, a physically-consistent density
-                # change (mass and inertia scaled together, per Rucker &
-                # Wensing 2022) rather than the bare body_mass shortcut.
+                "asset_cfg": SceneEntityCfg("door", body_names=("door",)),
                 "alpha_range": (-0.1, 0.1),
             },
         ),
@@ -275,44 +310,44 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
     }
     rewards = {
-        "reach_grip": RewardTermCfg(
-            func=valve_mdp.reach_target_reward,
+        "reach_handle": RewardTermCfg(
+            func=door_mdp.reach_target_reward,
             weight=1.0,
             params={
                 "std": 0.2,
                 "robot_cfg": ROBOT_EE_CFG,
-                "target_cfg": VALVE_GRIP_CFG,
+                "target_cfg": DOOR_HANDLE_CFG,
             },
         ),
-        "grip_contact": RewardTermCfg(
-            func=valve_mdp.contact_reward,
+        "handle_contact": RewardTermCfg(
+            func=door_mdp.contact_reward,
             weight=0.5,
             params={"sensor_name": "finger_grip_contact"},
         ),
-        "turn_rate": RewardTermCfg(
-            func=valve_mdp.turn_rate_reward,
-            weight=3.0,
-            params={"sensor_name": "finger_grip_contact", "asset_cfg": VALVE_JOINT_CFG},
-        ),
-        "turn_progress_shaping": RewardTermCfg(
-            func=valve_mdp.turn_progress_shaping_reward,
-            weight=2.0,
-            params={"sensor_name": "finger_grip_contact", "asset_cfg": VALVE_JOINT_CFG},
+        "swing_rate": RewardTermCfg(
+            func=door_mdp.swing_rate_reward,
+            weight=4.0,
+            params={"sensor_name": "finger_grip_contact", "asset_cfg": DOOR_JOINT_CFG},
         ),
         "success": RewardTermCfg(
-            func=valve_mdp.terminated_by,
-            weight=500.0,
-            params={"term_name": "turned_target"},
+            func=door_mdp.terminated_by,
+            weight=400.0,
+            params={"term_name": "swung_target"},
+        ),
+        "uncontrolled": RewardTermCfg(
+            func=door_mdp.uncontrolled_motion_penalty,
+            weight=-2.0,
+            params={"sensor_name": "finger_grip_contact", "asset_cfg": DOOR_JOINT_CFG},
         ),
         "reverse": RewardTermCfg(
-            func=valve_mdp.reverse_rate_penalty,
+            func=door_mdp.reverse_rate_penalty,
             weight=-1.0,
-            params={"asset_cfg": VALVE_JOINT_CFG},
+            params={"asset_cfg": DOOR_JOINT_CFG},
         ),
         "overspeed": RewardTermCfg(
-            func=valve_mdp.overspeed_penalty,
+            func=door_mdp.overspeed_penalty,
             weight=-2.0,
-            params={"asset_cfg": VALVE_JOINT_CFG},
+            params={"asset_cfg": DOOR_JOINT_CFG},
         ),
         "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.01),
         "joint_vel_hinge": RewardTermCfg(
@@ -335,26 +370,24 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
     terminations = {
         "time_out": TerminationTermCfg(func=base_mdp.time_out, time_out=True),
-        "turned_target": TerminationTermCfg(
-            func=valve_mdp.turned_target,
-            params={"sensor_name": "finger_grip_contact", "asset_cfg": VALVE_JOINT_CFG},
+        "swung_target": TerminationTermCfg(
+            func=door_mdp.swung_target,
+            params={"sensor_name": "finger_grip_contact", "asset_cfg": DOOR_JOINT_CFG},
         ),
     }
-    valve_init = EntityCfg.InitialStateCfg(
-        pos=VALVE_POS,
-        joint_pos={"valve_turn": 0.0},
-        joint_vel={"valve_turn": 0.0},
-    )
     cfg = ManagerBasedRlEnvCfg(
         scene=SceneCfg(
             terrain=TerrainEntityCfg(terrain_type="plane"),
             entities={
-                "robot": get_bimanual_robot_cfg(),
-                "valve": EntityCfg(spec_fn=get_valve_spec, init_state=valve_init),
+                "robot": get_door_robot_cfg(),
+                "door": EntityCfg(
+                    spec_fn=get_door_spec,
+                    init_state=EntityCfg.InitialStateCfg(pos=DOOR_POS),
+                ),
             },
             num_envs=1,
             env_spacing=2.5,
-            sensors=(FINGER_GRIP_SENSOR,),
+            sensors=(FINGER_DOOR_SENSOR,),
         ),
         observations=observations,
         actions=actions,
@@ -370,10 +403,10 @@ def openarm_valve_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # that, so the artifact only shows up in recorded video.
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.WORLD,
-            lookat=(0.30, 0.0, 0.52),
+            lookat=(0.33, -0.10, 0.52),
             distance=1.6,
             elevation=-20.0,
-            azimuth=200.0,
+            azimuth=220.0,
         ),
         sim=SimulationCfg(
             nconmax=150,

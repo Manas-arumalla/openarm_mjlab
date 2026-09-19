@@ -24,10 +24,14 @@ from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply, quat_inv
 
+from ...common_mdp import terminated_by
 from ...robot_bimanual import GRASP_LOCAL_OFFSET
+
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
+
+__all__ = ["terminated_by"]
 
 # Right-arm workspace box for targets (raw world coordinates; every env is
 # its own batched world, not a viewer-layout offset).
@@ -106,11 +110,6 @@ def hold_at_target_reward(
     """
     close = target_dist(env, robot_cfg) < 2 * SUCCESS_DIST
     return close.float()
-
-
-def reach_success_bonus(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """One-shot bonus tied to the ``reached`` termination firing."""
-    return env.termination_manager.get_term("reached").float()
 
 
 def reached(env: ManagerBasedRlEnv, robot_cfg: SceneEntityCfg) -> torch.Tensor:
