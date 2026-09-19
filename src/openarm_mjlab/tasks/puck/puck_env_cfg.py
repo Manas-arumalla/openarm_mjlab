@@ -96,10 +96,16 @@ def get_puck_spec() -> mujoco.MjSpec:
         # that pair mixed to max(0.4, 1.0) = 1.0 as well. dr_puck_friction
         # was randomizing a number MuJoCo read on neither pair. Outranking
         # both makes the declared 0.4 govern (measured: 0.4 at the finger
-        # and 0.4 at the table). condim=4 and the fingers' own solref keep
-        # the finger contact model as it was, so only the friction changes.
+        # and 0.4 at the table). condim=3 matches the class the rest of the
+        # robot's collision geoms use, so priority hands the puck only the
+        # friction, never a wider contact model: the torsional axis is not
+        # solved at all, which is why dr_puck_friction randomizes axes=[0]
+        # alone. A flat puck resting on the table is unaffected either way
+        # (its four corner contacts resist twist through sliding friction);
+        # what condim=3 gives up is twist resistance under a single-point
+        # fingertip press, which a pushing task does not rely on.
         priority=2,
-        condim=4,
+        condim=3,
         solref=(0.005, 1.0),
     )
     return spec
