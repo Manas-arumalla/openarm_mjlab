@@ -96,10 +96,16 @@ def get_puck_spec() -> mujoco.MjSpec:
         # that pair mixed to max(0.4, 1.0) = 1.0 as well. dr_puck_friction
         # was randomizing a number MuJoCo read on neither pair. Outranking
         # both makes the declared 0.4 govern (measured: 0.4 at the finger
-        # and 0.4 at the table). condim=4 and the fingers' own solref keep
-        # the finger contact model as it was, so only the friction changes.
+        # and 0.4 at the table). condim=3 matches the class the rest of the
+        # robot's collision geoms use, so priority hands the puck only the
+        # friction, never a wider contact model: the torsional axis is not
+        # solved at all, which is why dr_puck_friction randomizes axes=[0]
+        # alone. A flat puck resting on the table is unaffected either way
+        # (its four corner contacts resist twist through sliding friction);
+        # what condim=3 gives up is twist resistance under a single-point
+        # fingertip press, which a pushing task does not rely on.
         priority=2,
-        condim=4,
+        condim=3,
         solref=(0.005, 1.0),
     )
     return spec
@@ -134,10 +140,10 @@ def openarm_puck_env_cfg(
     """Build the OpenArm move-puck environment config.
 
     With ``vision=True``, the actor loses the privileged puck-position
-    observation terms and instead relies on a fixed overhead depth
-    camera; the critic (discarded at deployment) keeps full privileged
-    state and also gets the camera, the same asymmetric actor-critic
-    pattern mjlab's own vision reference task uses.
+    and contact observation terms and instead relies on a fixed overhead
+    depth camera; the critic (discarded at deployment) keeps full
+    privileged state and also gets the camera, the same asymmetric
+    actor-critic pattern mjlab's own vision reference task uses.
     """
     actor_terms = {
         "joint_pos": ObservationTermCfg(
@@ -157,7 +163,7 @@ def openarm_puck_env_cfg(
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
         "push_contact": ObservationTermCfg(
-            func=puck_mdp.push_contact_obs,
+            func=puck_mdp.fingers_on_handle_obs,
             params={"sensor_name": "finger_puck_contact"},
         ),
         "actions": ObservationTermCfg(func=base_mdp.last_action),
@@ -246,7 +252,9 @@ def openarm_puck_env_cfg(
             func=puck_mdp.at_goal_reward, weight=2.0, params={"asset_cfg": PUCK_CFG}
         ),
         "success": RewardTermCfg(
-            func=puck_mdp.push_success_bonus, weight=800.0, params={}
+            func=puck_mdp.terminated_by,
+            weight=800.0,
+            params={"term_name": "puck_at_goal"},
         ),
         "puck_overspeed": RewardTermCfg(
             func=puck_mdp.puck_overspeed_penalty,
@@ -258,7 +266,9 @@ def openarm_puck_env_cfg(
         # future dense income, too weak a deterrent once training drifts
         # toward a faster, more aggressive push.
         "puck_fell": RewardTermCfg(
-            func=puck_mdp.puck_fell_penalty, weight=-400.0, params={}
+            func=puck_mdp.terminated_by,
+            weight=-400.0,
+            params={"term_name": "puck_fell"},
         ),
         "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.01),
         "joint_vel_hinge": RewardTermCfg(
@@ -370,6 +380,11 @@ def openarm_puck_env_cfg(
         actor_obs = cfg.observations["actor"]
         actor_obs.terms.pop("tool_to_puck")
         actor_obs.terms.pop("puck_to_goal")
+        # The contact flag comes from a simulator contact sensor that the
+        # real gripper cannot produce, so it is privileged too: the vision
+        # actor has to infer contact from the depth image. The critic keeps
+        # it.
+        actor_obs.terms.pop("push_contact")
     if play:
         cfg.episode_length_s = int(1e9)
         cfg.observations["actor"].enable_corruption = False

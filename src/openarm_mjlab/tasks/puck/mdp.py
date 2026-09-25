@@ -30,11 +30,21 @@ from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply, quat_inv
 
-from ...common_mdp import fingers_on_handle
+from ...common_mdp import (
+    fingers_on_handle,
+    fingers_on_handle_obs,
+    terminated_by,
+)
 from ...robot_bimanual import GRASP_LOCAL_OFFSET
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
+
+__all__ = [
+    "fingers_on_handle",
+    "fingers_on_handle_obs",
+    "terminated_by",
+]
 
 # Goal disc, local to the env origin.
 GOAL_LOCAL = (0.33, -0.30, 0.422)
@@ -178,11 +188,6 @@ def reach_puck_reward(
     return torch.exp(-d2 / std**2)
 
 
-def push_contact_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
-    """Return the observation wrapper for puck contact."""
-    return fingers_on_handle(env, sensor_name).float().unsqueeze(-1)
-
-
 def push_rate_reward(
     env: ManagerBasedRlEnv,
     sensor_name: str,
@@ -232,11 +237,6 @@ def puck_overspeed_penalty(
     return torch.clamp(puck_speed(env, asset_cfg) - MAX_PUSH_SPEED, min=0.0)
 
 
-def push_success_bonus(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """Fire exactly once, on the ``puck_at_goal`` termination step."""
-    return env.termination_manager.get_term("puck_at_goal").float()
-
-
 def puck_at_goal(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Return success: the puck settled inside the goal disc."""
     close = puck_goal_dist(env, asset_cfg) < SUCCESS_DIST
@@ -247,18 +247,6 @@ def puck_at_goal(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Ten
 def puck_fell(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Return early termination: the puck was knocked off the table (top z=0.40)."""
     return puck_pos_w(env, asset_cfg)[:, 2] < 0.30
-
-
-def puck_fell_penalty(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """Return a penalty on the ``puck_fell`` termination step.
-
-    The direct negative counterpart to :func:`push_success_bonus`: without
-    it, a fall is only punished implicitly (by forfeiting future dense
-    income), which is too weak a deterrent once a policy drifts toward a
-    faster, more aggressive push -- ending in a fall should be punished as
-    directly as ending in success is rewarded.
-    """
-    return env.termination_manager.get_term("puck_fell").float()
 
 
 def reset_puck_uniform(

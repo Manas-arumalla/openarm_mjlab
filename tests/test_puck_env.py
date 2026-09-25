@@ -28,7 +28,7 @@ from mjlab.tasks.registry import list_tasks, load_env_cfg
 # of which arm this task actually actuates.
 OBS_DIM = 18 + 18 + 3 + 3 + 1 + 8  # joint_pos, joint_vel, tool_to_puck,
 # puck_to_goal, push_contact, actions
-VISION_ACTOR_OBS_DIM = OBS_DIM - 3 - 3  # privileged puck-position terms dropped.
+VISION_ACTOR_OBS_DIM = OBS_DIM - 3 - 3 - 1  # privileged puck state and contact.
 
 
 def test_tasks_are_registered():
@@ -93,6 +93,12 @@ def test_vision_actor_drops_privileged_puck_state(vision_env):
     assert obs["actor"].shape == (2, VISION_ACTOR_OBS_DIM)
     assert obs["critic"].shape == (2, OBS_DIM)
     assert obs["camera"].shape == (2, 1, 64, 64)
+    # Named rather than by width alone: push_contact is a simulator contact
+    # sensor with no real-robot counterpart, so it must not reach the actor.
+    active = vision_env.observation_manager.active_terms
+    for term in ("tool_to_puck", "puck_to_goal", "push_contact"):
+        assert term not in active["actor"]
+        assert term in active["critic"]
 
 
 def test_vision_env_steps_with_finite_signals(vision_env):
