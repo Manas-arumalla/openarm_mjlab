@@ -95,3 +95,69 @@ def test_left_arm_stays_at_default_under_zero_action(env):
     assert torch.allclose(
         robot.data.joint_pos[:, left_j4], torch.tensor(1.5708), atol=0.05
     )
+
+
+def test_spawn_manifold_does_not_touch_the_cabinet(env):
+    """Every `reset_along_pull` spawn must start with the gripper clear of the cabinet.
+
+    The spawn puts the right arm exactly on lerp(PULL_POSE_CLOSED, PULL_POSE_OPEN) with the
+    fingers at -0.25, so checking that line over the whole opening range covers every spawn.
+    """
+    import mujoco
+
+    from openarm_mjlab.tasks.drawer.mdp import (
+        DRAWER_TRAVEL,
+        PULL_POSE_CLOSED,
+        PULL_POSE_OPEN,
+    )
+
+    m = env.sim.mj_model
+    d = mujoco.MjData(m)
+    env.reset()
+    d.qpos[:] = env.sim.data.qpos.cpu().numpy()[0]
+
+    def adr(joint):
+        return m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, joint)]
+
+    arm = [adr(f"robot/openarm_right_joint{k}") for k in range(1, 8)]
+    fingers = [adr(f"robot/openarm_right_finger_joint{k}") for k in (1, 2)]
+    slide = adr("cabinet/drawer_slide")
+
+    def name(geom):
+        return mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, geom) or ""
+
+    closed, opened = torch.tensor(PULL_POSE_CLOSED), torch.tensor(PULL_POSE_OPEN)
+    for opening in torch.linspace(0.0, 0.08, 17):
+        pose = closed + (opened - closed) * (opening / DRAWER_TRAVEL)
+        d.qpos[arm] = pose.numpy()
+        d.qpos[fingers] = -0.25
+        d.qpos[slide] = -float(opening)
+        mujoco.mj_forward(m, d)
+        for c in d.contact[: d.ncon]:
+            pair = sorted((name(c.geom1), name(c.geom2)))
+            assert not (
+                pair[0].startswith("cabinet/") and pair[1].startswith("robot/")
+            ), (
+                f"spawn at {1000 * float(opening):.0f} mm: {pair[1]} touches {pair[0]} ({1000 * c.dist:.1f} mm)"
+            )
+
+
+def test_success_rejects_a_drawer_that_was_yanked(env):
+    """Success must fail if the drawer exceeded the peak speed at any point this episode."""
+    from openarm_mjlab.tasks.drawer.drawer_env_cfg import (
+        CABINET_JOINT_CFG,
+        PEAK_PULL_SPEED,
+    )
+    from openarm_mjlab.tasks.drawer.mdp import _peak_speed, drawer_held_fully_open
+
+    env.reset()
+    _peak_speed(env)[:] = PEAK_PULL_SPEED + 0.1
+    success = drawer_held_fully_open(
+        env,
+        sensor_name="finger_handle_contact",
+        threshold=0.0,
+        max_speed=float("inf"),
+        peak_speed=PEAK_PULL_SPEED,
+        asset_cfg=CABINET_JOINT_CFG,
+    )
+    assert not success.any()
