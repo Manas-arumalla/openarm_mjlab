@@ -120,6 +120,13 @@ def _prev_progress(env) -> torch.Tensor:
     return env._drawer_prev_progress
 
 
+def _peak_speed(env) -> torch.Tensor:
+    """Return the per-env peak drawer speed reached so far this episode."""
+    if not hasattr(env, "_drawer_peak_speed"):
+        env._drawer_peak_speed = torch.zeros(env.num_envs, device=env.device)
+    return env._drawer_peak_speed
+
+
 def record_drawer_start(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -139,6 +146,7 @@ def record_drawer_start(
     if not hasattr(env, "_drawer_gained_contact"):
         env._drawer_gained_contact = torch.zeros(env.num_envs, device=env.device)
     env._drawer_gained_contact[env_ids] = 0.0
+    _peak_speed(env)[env_ids] = 0.0
     _engaged(env)[env_ids] = 0.0
     _engage_frac(env)[env_ids] = 0.0
 
@@ -251,7 +259,9 @@ def frontal_grasp_reward(
     axis stays in the vertical plane so the cage straddles the horizontal
     handle bar top/bottom, the way a person pulls a drawer. Without this
     term the policy grabs the bar sideways. Returns the product of both
-    axis alignments, each mapped to 0..1.
+    axis alignments, each mapped to 0..1. The closing alignment is
+    sign-free: the gripper is symmetric under a 180 deg roll about the
+    tool axis, so both rolls are the same grasp and score the same.
     """
     robot: Entity = env.scene[robot_cfg.name]
     quat = robot.data.site_quat_w[:, robot_cfg.site_ids].squeeze(1)
@@ -265,7 +275,7 @@ def frontal_grasp_reward(
     target_z = torch.tensor([-math.cos(pitch), 0.0, math.sin(pitch)], device=device)
     target_x = torch.tensor([0.0, -1.0, 0.0], device=device)
     tool_align = (z_world @ target_z + 1.0) / 2.0
-    closing_align = (x_world @ target_x + 1.0) / 2.0
+    closing_align = (x_world @ target_x).abs()
     r = tool_align * closing_align
     if fade > 0.0:
         # Human wrists orient frontally to GRAB, then rotate a little as
@@ -282,6 +292,7 @@ def drawer_held_fully_open(
     sensor_name: str,
     threshold: float,
     max_speed: float,
+    peak_speed: float,
     asset_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
     """Return success: fully open, quasi-static, in contact, and honestly earned.
@@ -290,7 +301,12 @@ def drawer_held_fully_open(
     contact, so knocking the drawer open does not count as success.
     """
     opening_ok = drawer_opening(env, asset_cfg) > threshold
-    slow = drawer_speed(env, asset_cfg) < max_speed
+    # Quasi-static now (max_speed), AND never yanked this episode (peak_speed).
+    # Checked only at the end, a drawer yanked open and brought to rest at the
+    # end stop would pass.
+    peak = _peak_speed(env)
+    peak.copy_(torch.maximum(peak, drawer_speed(env, asset_cfg)))
+    slow = (drawer_speed(env, asset_cfg) < max_speed) & (peak < peak_speed)
     contact = fingers_on_handle(env, sensor_name)
     gained = drawer_opening(env, asset_cfg) - _start_opening(env)
     if not hasattr(env, "_drawer_gained_contact"):
@@ -301,9 +317,13 @@ def drawer_held_fully_open(
 
 # Pull-manifold spawns (last-resort drawer curriculum): both branch-
 # consistent IK poses, lerped by the spawn opening so the cage tracks
-# the handle at every depth.
-PULL_POSE_CLOSED = (0.3023, 0.171, 0.1442, 1.3204, 0.0122, 0.0955, -0.0358)
-PULL_POSE_OPEN = (-0.1476, 0.1145, 0.2265, 1.7283, 0.002, -0.0623, -0.0892)
+# the handle at every depth. The wrist is rolled so the jaws close across
+# the bar (81-84 deg to it), and the grip point sits 21 mm back from the bar
+# so the pads, not the space in front of them, straddle it. Checked with
+# MuJoCo's contact pass over the whole spawn range: no contact with the
+# cabinet, and closing the jaws puts both pads on the bar first.
+PULL_POSE_CLOSED = (0.268, 0.6291, -0.4159, 1.4393, -0.9643, 0.4809, -0.0296)
+PULL_POSE_OPEN = (-0.2798, 0.5063, -0.0739, 1.8041, -1.1999, 0.4841, -0.1652)
 _RIGHT_JOINTS = tuple(f"openarm_right_joint{i}" for i in range(1, 8))
 
 
