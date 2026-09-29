@@ -22,14 +22,30 @@ import torch
 
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-from ...common_mdp import terminated_by
+from ...common_mdp import (
+    both_pads_on_block,
+    env_buffer,
+    partial_pinch_reward,
+    pinch_obs,
+    pinch_reward,
+    pinch_streak_reward,
+    reset_pinch_streak,
+    terminated_by,
+)
 
 
 if TYPE_CHECKING:
     from mjlab.entity import Entity
     from mjlab.envs import ManagerBasedRlEnv
 
-__all__ = ["terminated_by"]
+__all__ = [
+    "partial_pinch_reward",
+    "pinch_obs",
+    "pinch_reward",
+    "pinch_streak_reward",
+    "reset_pinch_streak",
+    "terminated_by",
+]
 
 # _target_pos_w is on the hot path (2 observation terms + the transport
 # reward each step); cache the constant offset tensor per (value, device)
@@ -86,14 +102,50 @@ def object_reach_reward(
     return torch.exp(-err / std**2)
 
 
+def staged_reach_bring_reward(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    target_name: str,
+    reaching_std: float,
+    bringing_std: float,
+    asset_cfg: SceneEntityCfg,
+    target_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Return ``reaching * (1 + bringing)``, mjlab's lift_cube staged reward.
+
+    Both factors are Gaussian kernels: EE-to-object and object-to-target.
+    Bringing pays only through reaching, so moving the object is credited
+    while the gripper stays on it, and unlike a binary height gate it
+    carries a gradient toward the target from the very first centimeter.
+    """
+    reaching = object_reach_reward(env, object_name, reaching_std, asset_cfg)
+    obj: Entity = env.scene[object_name]
+    err = torch.sum(
+        torch.square(
+            _target_pos_w(env, target_name, target_offset) - obj.data.root_link_pos_w
+        ),
+        dim=-1,
+    )
+    bringing = torch.exp(-err / bringing_std**2)
+    return reaching * (1.0 + bringing)
+
+
 def object_lifted(
     env: ManagerBasedRlEnv,
     object_name: str,
     minimum_height: float,
+    sensor_name: str | None = None,
 ) -> torch.Tensor:
-    """1.0 while the object's center is above minimum_height (world z)."""
+    """1.0 while the object's center is above minimum_height (world z).
+
+    With ``sensor_name``, pays only while both finger pads pinch the object,
+    so a cube knocked into the air earns nothing.
+    """
     obj: Entity = env.scene[object_name]
-    return (obj.data.root_link_pos_w[:, 2] > minimum_height).float()
+    lifted = obj.data.root_link_pos_w[:, 2] > minimum_height
+    if sensor_name is not None:
+        lifted = lifted & both_pads_on_block(env, sensor_name)
+    return lifted.float()
 
 
 def object_transport_reward(
@@ -114,20 +166,66 @@ def object_transport_reward(
     return lifted * torch.exp(-err / std**2)
 
 
+def _carried(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Return the per-env flag: object carried at least once this episode."""
+    return env_buffer(
+        env,
+        "_pick_place_carried",
+        lambda: torch.zeros(env.num_envs, dtype=torch.bool, device=env.device),
+    )
+
+
+def object_carried(
+    env: ManagerBasedRlEnv,
+    object_name: str,
+    minimum_height: float,
+    sensor_name: str,
+) -> torch.Tensor:
+    """Return whether the object has been carried this episode, updating the flag.
+
+    Carried means pinched by both finger pads while above ``minimum_height``
+    at least once since reset. Neither pushing the object along the table
+    nor flicking it into the air counts.
+    """
+    obj: Entity = env.scene[object_name]
+    above = obj.data.root_link_pos_w[:, 2] > minimum_height
+    carried = _carried(env)
+    carried |= above & both_pads_on_block(env, sensor_name)
+    return carried
+
+
+def reset_carried(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
+    """Reset event: clear the carried flag for the given envs."""
+    _carried(env)[env_ids] = False
+
+
 def object_in_tray(
     env: ManagerBasedRlEnv,
     object_name: str,
     tray_name: str,
     xy_tolerance: float,
     max_height_above_tray: float,
+    carry_min_height: float | None = None,
+    sensor_name: str | None = None,
 ) -> torch.Tensor:
-    """Boolean mask: object inside the tray footprint and near its bottom."""
+    """Boolean mask: object inside the tray footprint and near its bottom.
+
+    With ``carry_min_height``, it also requires :func:`object_carried`, so an
+    object pushed into the tray without being carried over the walls does
+    not count.
+    """
     obj: Entity = env.scene[object_name]
     tray: Entity = env.scene[tray_name]
     delta = obj.data.root_link_pos_w - tray.data.root_link_pos_w
     in_xy = (delta[:, :2].abs() < xy_tolerance).all(dim=-1)
     low = delta[:, 2] < max_height_above_tray
-    return in_xy & low
+    in_tray = in_xy & low
+    if carry_min_height is not None:
+        assert sensor_name is not None, "carry gating needs the finger sensor"
+        in_tray = in_tray & object_carried(
+            env, object_name, carry_min_height, sensor_name
+        )
+    return in_tray
 
 
 ##
@@ -143,10 +241,22 @@ def object_settled_in_tray(
     max_height_above_tray: float,
     max_speed: float,
     max_ang_speed: float,
+    carry_min_height: float | None = None,
+    sensor_name: str | None = None,
 ) -> torch.Tensor:
-    """Success: object resting inside the tray with near-zero velocity."""
+    """Success: object resting inside the tray with near-zero velocity.
+
+    ``carry_min_height``/``sensor_name`` gate it on carrying, as in
+    :func:`object_in_tray`.
+    """
     in_tray = object_in_tray(
-        env, object_name, tray_name, xy_tolerance, max_height_above_tray
+        env,
+        object_name,
+        tray_name,
+        xy_tolerance,
+        max_height_above_tray,
+        carry_min_height,
+        sensor_name,
     )
     obj: Entity = env.scene[object_name]
     slow = torch.norm(obj.data.root_link_lin_vel_w, dim=-1) < max_speed
