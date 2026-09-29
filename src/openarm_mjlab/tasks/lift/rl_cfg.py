@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PPO runner config for the OpenArm valve-turning task."""
+"""PPO runner config for the OpenArm lift task."""
 
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 
 from ...rl_cfg import ppo_runner_cfg
 
 
-def openarm_valve_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-    """Return the valve task's PPO runner config."""
-    return ppo_runner_cfg("openarm_valve")
+def openarm_lift_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+    """Return the lift task's PPO runner config."""
+    return ppo_runner_cfg("openarm_lift")

@@ -12,13 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PPO runner config for the OpenArm valve-turning task."""
+"""PPO runner config for the OpenArm bimanual lift task.
+
+Hyperparameters are the same ones the single-arm lift task uses; only the
+reward and environment design differ between the two. Raising
+``entropy_coef`` (0.03) was tried to break the plateau where reach and grip
+saturate while the lift signal stays flat. It neither unlocked lifting nor
+cost grip precision, so the shared default is kept.
+"""
 
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 
 from ...rl_cfg import ppo_runner_cfg
 
 
-def openarm_valve_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-    """Return the valve task's PPO runner config."""
-    return ppo_runner_cfg("openarm_valve")
+def openarm_bimanual_lift_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+    """Build the PPO runner config for the bimanual lift task."""
+    return ppo_runner_cfg("openarm_bimanual_lift")
