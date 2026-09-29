@@ -259,7 +259,9 @@ def frontal_grasp_reward(
     axis stays in the vertical plane so the cage straddles the horizontal
     handle bar top/bottom, the way a person pulls a drawer. Without this
     term the policy grabs the bar sideways. Returns the product of both
-    axis alignments, each mapped to 0..1.
+    axis alignments, each mapped to 0..1. The closing alignment is
+    sign-free: the gripper is symmetric under a 180 deg roll about the
+    tool axis, so both rolls are the same grasp and score the same.
     """
     robot: Entity = env.scene[robot_cfg.name]
     quat = robot.data.site_quat_w[:, robot_cfg.site_ids].squeeze(1)
@@ -273,7 +275,7 @@ def frontal_grasp_reward(
     target_z = torch.tensor([-math.cos(pitch), 0.0, math.sin(pitch)], device=device)
     target_x = torch.tensor([0.0, -1.0, 0.0], device=device)
     tool_align = (z_world @ target_z + 1.0) / 2.0
-    closing_align = (x_world @ target_x + 1.0) / 2.0
+    closing_align = (x_world @ target_x).abs()
     r = tool_align * closing_align
     if fade > 0.0:
         # Human wrists orient frontally to GRAB, then rotate a little as

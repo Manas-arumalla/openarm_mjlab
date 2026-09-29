@@ -161,3 +161,17 @@ def test_success_rejects_a_drawer_that_was_yanked(env):
         asset_cfg=CABINET_JOINT_CFG,
     )
     assert not success.any()
+
+
+def test_frontal_grasp_scores_the_spawn_grasp_as_aligned(env):
+    """The spawn grasp straddles the bar top/bottom, so `frontal_grasp` must rate it aligned.
+
+    The gripper is symmetric under a 180 deg roll about the tool axis. A closing
+    alignment that tells the two rolls apart scored this very grasp ~0.02.
+    """
+    from openarm_mjlab.tasks.drawer.mdp import frontal_grasp_reward
+
+    env.reset()
+    params = env.reward_manager.get_term_cfg("frontal_grasp").params
+    r = frontal_grasp_reward(env, robot_cfg=params["robot_cfg"], pitch=params["pitch"])
+    assert (r > 0.8).all(), r
