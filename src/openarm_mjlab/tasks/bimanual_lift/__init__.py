@@ -12,13 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PPO runner config for the OpenArm valve-turning task."""
+"""OpenArm bimanual bar-lifting task."""
 
-from mjlab.rl import RslRlOnPolicyRunnerCfg
+from mjlab.tasks.manipulation.rl import ManipulationOnPolicyRunner
+from mjlab.tasks.registry import register_mjlab_task
 
-from ...rl_cfg import ppo_runner_cfg
+from .bimanual_lift_env_cfg import openarm_bimanual_lift_env_cfg
+from .rl_cfg import openarm_bimanual_lift_ppo_runner_cfg
 
-
-def openarm_valve_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-    """Return the valve task's PPO runner config."""
-    return ppo_runner_cfg("openarm_valve")
+register_mjlab_task(
+    task_id="OpenArm-BimanualLift",
+    env_cfg=openarm_bimanual_lift_env_cfg(),
+    play_env_cfg=openarm_bimanual_lift_env_cfg(play=True),
+    rl_cfg=openarm_bimanual_lift_ppo_runner_cfg(),
+    runner_cls=ManipulationOnPolicyRunner,
+)

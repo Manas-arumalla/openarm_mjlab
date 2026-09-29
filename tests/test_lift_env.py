@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration tests for the OpenArm-Puck and OpenArm-Puck-Vision environments.
+"""Integration tests for the OpenArm-Lift environment.
 
 Note: building the env compiles mujoco-warp CPU kernels; the first run can
 take a few minutes.
@@ -26,32 +26,19 @@ from mjlab.tasks.registry import list_tasks, load_env_cfg
 
 # joint_pos/joint_vel report ALL 18 bimanual joints (both arms), regardless
 # of which arm this task actually actuates.
-OBS_DIM = 18 + 18 + 3 + 3 + 1 + 8  # joint_pos, joint_vel, tool_to_puck,
-# puck_to_goal, push_contact, actions
-VISION_ACTOR_OBS_DIM = OBS_DIM - 3 - 3 - 1  # privileged puck state and contact.
+OBS_DIM = 18 + 18 + 3 + 1 + 8  # joint_pos, joint_vel, tool_to_block, pinch,
+# actions
 
 
-def test_tasks_are_registered():
-    assert "OpenArm-Puck" in list_tasks()
-    assert "OpenArm-Puck-Vision" in list_tasks()
+def test_task_is_registered():
+    assert "OpenArm-Lift" in list_tasks()
 
 
 @pytest.fixture(scope="module")
 def env():
     from mjlab.envs import ManagerBasedRlEnv
 
-    cfg = load_env_cfg("OpenArm-Puck")
-    cfg.scene.num_envs = 2
-    env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
-    yield env
-    env.close()
-
-
-@pytest.fixture(scope="module")
-def vision_env():
-    from mjlab.envs import ManagerBasedRlEnv
-
-    cfg = load_env_cfg("OpenArm-Puck-Vision")
+    cfg = load_env_cfg("OpenArm-Lift")
     cfg.scene.num_envs = 2
     env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
     yield env
@@ -59,6 +46,8 @@ def vision_env():
 
 
 def test_action_and_observation_dims(env):
+    # 7 right-arm joint_pos dims + 1 finger squeeze effort dim; left_hold
+    # contributes 0 dims.
     assert env.action_manager.total_action_dim == 8
     obs, _ = env.reset()
     assert obs["actor"].shape == (2, OBS_DIM)
@@ -76,39 +65,24 @@ def test_env_steps_with_finite_signals(env):
         assert truncated.shape == (2,)
 
 
-def test_reset_puck_spawns_within_xy_range(env):
-    """`reset_puck_uniform` must spawn every env within its declared jitter."""
-    from openarm_mjlab.tasks.puck.puck_env_cfg import PUCK_CFG, PUCK_START
+def test_reset_held_high_places_block_at_the_hold_height():
+    """With probability=1.0, every env must spawn already holding the block."""
+    from openarm_mjlab.tasks.lift.lift_env_cfg import BLOCK_CFG, openarm_lift_env_cfg
     from openarm_mjlab.common_mdp import object_pos_w
+    from openarm_mjlab.tasks.lift.mdp import HELD_HIGH_TOOL_Z
 
-    env.reset()
-    pos = object_pos_w(env, PUCK_CFG)
-    start = torch.tensor(PUCK_START[:2])
-    assert (pos[:, :2] - start).abs().max() <= 0.03 + 1e-6
+    from mjlab.envs import ManagerBasedRlEnv
 
-
-def test_vision_actor_drops_privileged_puck_state(vision_env):
-    """The vision actor must lose the privileged terms while the critic keeps them."""
-    obs, _ = vision_env.reset()
-    assert obs["actor"].shape == (2, VISION_ACTOR_OBS_DIM)
-    assert obs["critic"].shape == (2, OBS_DIM)
-    assert obs["camera"].shape == (2, 1, 64, 64)
-    # Named rather than by width alone: push_contact is a simulator contact
-    # sensor with no real-robot counterpart, so it must not reach the actor.
-    active = vision_env.observation_manager.active_terms
-    for term in ("tool_to_puck", "puck_to_goal", "push_contact"):
-        assert term not in active["actor"]
-        assert term in active["critic"]
-
-
-def test_vision_env_steps_with_finite_signals(vision_env):
-    vision_env.reset()
-    for _ in range(5):
-        action = torch.zeros(2, vision_env.action_manager.total_action_dim)
-        obs, rew, terminated, truncated, _ = vision_env.step(action)
-        assert torch.isfinite(obs["actor"]).all()
-        assert torch.isfinite(obs["camera"]).all()
-        assert torch.isfinite(rew).all()
+    cfg = openarm_lift_env_cfg()
+    cfg.scene.num_envs = 2
+    cfg.events["reset_held_high"].params["probability"] = 1.0
+    env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
+    try:
+        env.reset()
+        pos = object_pos_w(env, BLOCK_CFG)
+        assert torch.allclose(pos[:, 2], torch.tensor(HELD_HIGH_TOOL_Z), atol=1e-3)
+    finally:
+        env.close()
 
 
 def test_left_arm_stays_at_default_under_zero_action(env):

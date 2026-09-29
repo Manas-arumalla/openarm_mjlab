@@ -41,27 +41,26 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from ...actions import HoldDefaultPositionActionCfg
-from ...robot_bimanual import (
+from ...openarm_bimanual import (
     BIMANUAL_ACTION_SCALE,
     EE_SITE_RIGHT,
     get_bimanual_robot_cfg,
 )
 from . import mdp as drawer_mdp
 
-# Caged start: two-stage branch-consistent DLS IK, branch anchored at the
-# END-of-pull handle pose (pick the branch from the hardest pose first),
-# then continued to the closed-handle cage. Residuals 0.06mm; start->end
-# max joint travel 0.45 rad (single smooth branch).
+# Caged start = PULL_POSE_CLOSED (see mdp.py): the jaws close ACROSS the
+# handle bar with the bar between the pads, and the gripper touches nothing
+# at any spawn opening.
 DRAWER_CAGED_HOME = EntityCfg.InitialStateCfg(
     pos=(0.0, 0.0, 0.0),
     joint_pos={
-        "openarm_right_joint1": 0.3023,
-        "openarm_right_joint2": 0.171,
-        "openarm_right_joint3": 0.1442,
-        "openarm_right_joint4": 1.3204,
-        "openarm_right_joint5": 0.0122,
-        "openarm_right_joint6": 0.0955,
-        "openarm_right_joint7": -0.0358,
+        "openarm_right_joint1": 0.268,
+        "openarm_right_joint2": 0.6291,
+        "openarm_right_joint3": -0.4159,
+        "openarm_right_joint4": 1.4393,
+        "openarm_right_joint5": -0.9643,
+        "openarm_right_joint6": 0.4809,
+        "openarm_right_joint7": -0.0296,
         "openarm_right_finger_joint[12]": -0.25,
         "openarm_left_joint4": 1.5708,
         "openarm_left_joint[12356]": 0.0,
@@ -140,6 +139,10 @@ _TABLE_REL_POS = (0.47 - CABINET_POS[0], 0.0 - CABINET_POS[1], 0.36 - CABINET_PO
 
 FULL_OPENING = 0.09
 MAX_PULL_SPEED = 0.15  # A grasp-pull moves the slide slowly.
+# Peak slide speed allowed at ANY point of a successful episode. Well above a
+# grasped pull, well below a yank (a policy that yanks the drawer open peaks
+# around 1.2 m/s).
+PEAK_PULL_SPEED = 0.5
 
 
 def get_cabinet_spec() -> mujoco.MjSpec:
@@ -201,11 +204,14 @@ def get_cabinet_spec() -> mujoco.MjSpec:
         friction=(0.4, 0.01, 0.01),
         rgba=(0.22, 0.36, 0.52, 1.0),
     )
-    # Stand-off handle bar on two stems (gripper closes on the bar).
+    # Stand-off handle bar on two stems (gripper closes on the bar). The stems
+    # are 74 mm apart (66 mm clear): the fingertip pads are ~55 mm plates, and
+    # with the jaws across the bar their long side lies along it, so stems
+    # closer together (these were 28 mm clear) block every grip on the bar.
     drawer.add_geom(
         name="drawer_handle",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=(-0.092, -0.02, 0, -0.092, 0.02, 0),
+        fromto=(-0.092, -0.04, 0, -0.092, 0.04, 0),
         size=(0.007, 0, 0),
         mass=0.02,
         rgba=(0.2, 0.2, 0.22, 1.0),
@@ -226,7 +232,7 @@ def get_cabinet_spec() -> mujoco.MjSpec:
     drawer.add_geom(
         name="drawer_handle_stem1",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=(-0.052, -0.018, 0, -0.092, -0.018, 0),
+        fromto=(-0.052, -0.037, 0, -0.092, -0.037, 0),
         size=(0.004, 0, 0),
         mass=0.005,
         rgba=(0.2, 0.2, 0.22, 1.0),
@@ -234,7 +240,7 @@ def get_cabinet_spec() -> mujoco.MjSpec:
     drawer.add_geom(
         name="drawer_handle_stem2",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=(-0.052, 0.018, 0, -0.092, 0.018, 0),
+        fromto=(-0.052, 0.037, 0, -0.092, 0.037, 0),
         size=(0.004, 0, 0),
         mass=0.005,
         rgba=(0.2, 0.2, 0.22, 1.0),
@@ -494,6 +500,7 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "sensor_name": "finger_handle_contact",
                 "threshold": FULL_OPENING,
                 "max_speed": MAX_PULL_SPEED,
+                "peak_speed": PEAK_PULL_SPEED,
                 "asset_cfg": CABINET_JOINT_CFG,
             },
         ),
@@ -525,13 +532,15 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # MuJoCo tracking cameras follow the tracked body's subtree COM
         # (here the whole right arm), so offscreen-rendered videos sway
         # with every arm motion. mjlab's interactive viewer works around
-        # that, so the artifact only shows up in recorded video.
+        # that, so the artifact only shows up in recorded video. Viewed from
+        # the robot's right side: the drawer slides out along -x toward the
+        # robot, so a camera behind the cabinet hides the drawer front.
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.WORLD,
-            lookat=(0.45, -0.22, 0.52),
-            distance=1.8,
-            elevation=-15.0,
-            azimuth=160.0,
+            lookat=(0.38, -0.26, 0.52),
+            distance=0.9,
+            elevation=-20.0,
+            azimuth=80.0,
         ),
         sim=SimulationCfg(
             nconmax=150,
