@@ -124,131 +124,42 @@ LEVEL_TOLERANCE = 0.015  # m
 PINCH_STREAK_CAP = 25.0  # steps, same derivation as lift's (~0.5s, roughly
 # the time a real lift to TARGET_LIFT at MAX_LIFT_RATE would take).
 
-# An earlier attempt showed that individual_lift_rate_reward (an UNGATED per-arm bootstrap)
-# still never fired either -- neither arm ever discovers ANY upward
-# motion, ruling out coordination-gating as the specific bottleneck.
-# Mirrors lift's own history: lift needed reset_held_high (a curriculum
-# spawning some episodes already partway lifted) before genuine lifting
-# emerged, because pure from-scratch exploration of "squeeze AND raise"
-# is a narrow needle regardless of reward shape. Unlike lift, this task
-# had no IK-derived reference pose to build that curriculum on (both
-# arms use the generic HOME_KEYFRAME) -- solved for one here, using the
-# same OpenArmKinematics solver openarm_control/kinematics.py already
-# uses for the classical stack's own bimanual work, seeded at
-# HOME_KEYFRAME, targeting each end raised by HELD_HIGH_RAISE (0.08m,
-# matching lift's own choice -- below TARGET_LIFT so the policy still
-# has to finish the climb, not just hold at the goal). Converged
-# cleanly (error 0.046mm, first seed). Verified the classical stack's
-# own documented y=0-mirror identity (config.py's MIRROR_R2L, "verified
-# 0.000mm/0.000deg") holds for this pose too: solving the LEFT arm
-# independently and via q_left=MIRROR_R2L*q_right agreed to 1.4e-17
-# (floating-point exact) -- both are recorded below rather than only
-# trusting the mirror shortcut.
-HELD_HIGH_RAISE = 0.08  # m above BAR_START, matches lift's own reset_held_high
-# 2026-08-28 RE-SOLVED WITH THE ORIENTATION CONSTRAINED. The previous
-# values came from a POSITION-ONLY IK solve (see the "error 0.046mm" note
-# above -- millimetres, no angular term), so their wrist orientation was an
-# arbitrary artifact of the solver's null-space. Measured consequence
-# (probe_grasp_twist.py): the gripper rotates 57.6 deg mean along the path
-# from the policy's natural table grasp to this default pose. Since the
-# default pose IS the zero-action pose, that made a lift -- which "should"
-# be a pure relaxation toward default -- into a motion that twists the bar
-# out of the fingers, and it is the measured root cause of the never-lifts
-# plateau. Rewarding alignment instead was tried and regressed
-# (tested and reverted), because it fights kinematics rather than
-# fixing the reference.
-#
-# These are re-solved by solve_held_high_oriented.py: the orientation the
-# policy ACTUALLY adopts when grasping at the table, held fixed, at the
-# grasp position raised by HELD_HIGH_RAISE. Converged to 0.007mm position
-# AND 0.000 deg orientation error for both arms, seeded at the measured
-# grasp configuration so the solution stays in the same kinematic branch.
-# Default and grasp now differ by HEIGHT ALONE, so relaxing toward default
-# is a genuine vertical lift.
-#
-# NOTE: unlike the old values these are NOT an exact y-mirror pair. They are
-# derived from the policy's own grasp, which is not perfectly symmetric, so
-# the classical stack's MIRROR_R2L identity no longer applies here -- each
-# side is solved independently and that is deliberate.
+# Start some episodes already grasping, below the success height. These
+# joint poses were solved against the compiled task scene, with the palms
+# outside the bar ends and the jaws closing along world X. The EE local X
+# axis points up; local Z points outward along the bar (right: -Y, left: +Y).
+HELD_HIGH_RAISE = 0.08
+# The shared tool point is 135 mm from the wrist. Keep it 8 mm outward
+# from each end center so the block contacts the pads, clearing the palm
+# and proximal finger geometry. The actual grip center is thus 143 mm
+# along local -Z. Centering the shared tool exactly causes base contact.
+HELD_HIGH_TOOL_CLEARANCE = 0.008
 HELD_HIGH_RIGHT_Q = (
-    0.1060,
-    0.5567,
-    -0.0246,
-    1.4836,
-    0.5684,
-    0.0565,
-    1.0371,
+    0.60144666,
+    0.74906976,
+    -0.66989157,
+    0.98381081,
+    0.95896037,
+    -0.25823608,
+    1.56930847,
 )
 HELD_HIGH_LEFT_Q = (
-    -0.2007,
-    -0.4367,
-    0.4452,
-    1.7822,
-    -0.5292,
-    -0.1500,
-    0.6359,
+    -0.61281477,
+    -0.75918873,
+    0.70237430,
+    0.98381081,
+    -0.98149732,
+    0.26922589,
+    -1.56151126,
 )
-# An earlier attempt showed that a FIXED 50/50 mix of
-# "cold table start" and "already 67% up" never transferred cold-start
-# competence -- checked every checkpoint (500-2999), all 0%. The
-# curriculum episodes DID succeed (that's what drove the misleadingly
-# strong aggregate training-log numbers), just never generalized.
-# an earlier attempt then tried an ANNEALED version (spawn raise/probability
-# decaying linearly to 0 by HELD_HIGH_ANNEAL_STEPS) reasoning from
-# reverse-curriculum literature (Florensa et al. 2017) -- also 0% at
-# every checkpoint.
-#
-# 2026-08-23 root cause found (see the project notes, dated entry):
-# BOTH prior attempts moved the ROBOT'S JOINTS via write_joint_state_to_
-# sim while leaving the arm action terms' use_default_offset anchored to
-# the plain HOME_KEYFRAME (elbow-only neutral pose) -- because
-# JointPositionAction snapshots its _offset ONCE, at env-build time, from
-# entity.data.default_joint_pos, a per-episode write_joint_state_to_sim
-# call can move the PHYSICAL joint but never touches that offset. Direct
-# probe (scratchpad probe_yankback.py, zero action from a forced
-# held-high reset): right/left joint4 collapsed from 1.83 back toward
-# HOME_KEYFRAME's 1.57 within 3 steps, and h_together crashed from
-# 100mm to 30mm in 9 steps (~180ms) -- numerically the SAME "zero action
-# yanks the arm home, block drops in 160ms" signature lift's own review
-# #3 already diagnosed and fixed for the single-arm task (LIFT_HOME).
-# Control (same probe, offset monkey-patched to the held-high pose):
-# height held near 90-100mm the entire 40 steps, confirming the
-# actuator/gain setup itself is fine -- the bug is specifically the
-# offset/reset mismatch. This also explains an earlier attempt's own
-# unexplained late-training collapse: with maxh pre-set to the reset
-# height, a fall-then-partial-recover cycle earns ZERO new lift_rate
-# reward (new-progress-only, gated on the OLD high-water mark), so the
-# curriculum-assisted episodes were never actually rewarding the
-# intended "finish the climb" behavior, just the yank-and-recover
-# transient.
-#
-# Fix: mirror lift's OWN proven recipe exactly rather than re-inventing
-# a bimanual-specific curriculum shape. lift's LIFT_HOME IS its
-# HELD_HIGH_POSE (byte-identical joint values, per lift/mdp.py's own
-# comment: "Arm already at the held-high DEFAULT... only pin the
-# fingers... and place the block") -- the robot's DEFAULT pose is the
-# grip-ready pose, so zero action holds it, cold-table-start episodes
-# already hover right above the object, and reset_held_high only ever
-# needs to move the OBJECT, never the arm. Applied the same trick here:
-# get_bimanual_lift_robot_cfg's init_state now uses HELD_HIGH_RIGHT_Q/
-# LEFT_Q directly (already IK-solved, already verified <0.05mm error --
-# see below), and reset_bar_held_high (further down) no longer touches
-# the robot's joints at all. The old TABLE_RIGHT_Q/LEFT_Q (arm-at-table-
-# height IK solve, used only for the now-removed anneal's interpolation)
-# and the anneal schedule are removed as unneeded complexity fixing a
-# problem (permanent easy-mode exploitation) that was itself confounded
-# by this bug -- lift's own shipped config uses a FIXED, low probability
-# (0.15, see lift_env_cfg.py's reset_held_high wiring), which is the
-# only actually-proven ratio available, so that's what's reused here
-# rather than guessing a new one.
+# Also used by BIMANUAL_LIFT_HOME: zero arm action holds the reset pose.
+# Selected curriculum resets restore these exact angles after joint jitter;
+# unassisted episodes retain the normal randomized joint initialization.
 HELD_HIGH_PROBABILITY = 0.15
-# Same block geometry as lift (verbatim), so lift's own proven squeeze
-# value transfers directly for the right finger; left is sign-mirrored
-# to match its mirrored joint range (0..0.7854 vs right's -0.7854..0,
-# confirmed in the XML -- see bimanual_lift_env_cfg.py's own actuator
-# comments).
-RIGHT_FINGER_SQUEEZE = -0.22
-LEFT_FINGER_SQUEEZE = 0.22
+# Compiled-scene contacts at this width overlap only the intended pads by
+# about 0.51 mm, with no palm, proximal-finger, or connecting-rod contact.
+RIGHT_FINGER_SQUEEZE = -0.265
+LEFT_FINGER_SQUEEZE = 0.265
 
 
 def bar_pos_w(env, asset_cfg) -> torch.Tensor:
@@ -417,8 +328,8 @@ GRASP_QUALITY_FLOOR = 0.4  # keep some income for ANY grasp (see below)
 # These are the EE orientations at the default (held-high) pose, measured
 # directly from the compiled scene. Rewarding the grasp to align with them
 # makes lifting a relaxation again.
-DEFAULT_EE_QUAT_RIGHT = (-0.6449, 0.0080, 0.7638, -0.0255)
-DEFAULT_EE_QUAT_LEFT = (-0.6488, 0.0007, 0.7587, 0.0579)
+DEFAULT_EE_QUAT_RIGHT = (0.5, 0.5, -0.5, 0.5)
+DEFAULT_EE_QUAT_LEFT = (0.5, -0.5, -0.5, -0.5)
 # Sized so the CURRENT ~58 deg (1.01 rad) misalignment scores ~0.5 rather
 # than sitting in the flat tail of the Gaussian. An earlier grasp-centring
 # term had exactly that gradient-desert bug at too tight a width, so the
@@ -777,27 +688,12 @@ def reset_bar_held_high(
     robot_joints_cfg: SceneEntityCfg,
     probability: float = HELD_HIGH_PROBABILITY,
 ) -> None:
-    """Reset a fraction of episodes with the bar already raised.
+    """Reset selected episodes to a grasp aligned with the raised bar.
 
-    Bimanual version of lift's reset_held_high -- rewritten 2026-08-23
-
-    to fix the yank-back bug (see HELD_HIGH_PROBABILITY's docstring above
-    for the full diagnosis and the probe that confirmed it).
-
-    Now mirrors lift's actual mechanism exactly, not just its intent: the
-    robot's default pose (get_bimanual_lift_robot_cfg's init_state, fixed
-    in this same commit) IS the held-high pose, so reset_robot_joints'
-    own jitter already puts the arm there for every episode, every time,
-    with zero action holding it -- this function only needs to pin the
-    fingers to their squeeze width and place the BAR at the held height,
-    exactly like lift's reset_held_high does for the block. No arm-joint
-    writes, no interpolation, no annealing: with the yank-back gone, a
-    fixed low probability (lift's own proven 0.15) is the only tested
-    ratio, so that's what's used rather than re-guessing a schedule.
-
-    Runs AFTER reset_bar_uniform (overrides the subset for the picked
-    envs; streak buffers are left as reset_bar_uniform set them, matching
-    lift's own precedent of not separately touching them here).
+    Run after the normal joint and bar resets. Restore the reference arm
+    pose to remove joint jitter only for selected episodes, set the finger
+    width, and place the bar. The reference is also the action default, so
+    zero arm action holds this pose instead of pulling away from the bar.
     """
     if probability <= 0.0:
         return
@@ -809,7 +705,14 @@ def reset_bar_held_high(
         return
     jp = robot.data.joint_pos[ids].clone()
     jv = torch.zeros_like(robot.data.joint_vel[ids])
+    arm_positions = {
+        f"openarm_{side}_joint{i}": q
+        for side, angles in (("right", HELD_HIGH_RIGHT_Q), ("left", HELD_HIGH_LEFT_Q))
+        for i, q in enumerate(angles, start=1)
+    }
     for j, jname in enumerate(robot.joint_names):
+        if jname in arm_positions:
+            jp[:, j] = arm_positions[jname]
         if "right_finger" in jname:
             jp[:, j] = RIGHT_FINGER_SQUEEZE
         if "left_finger" in jname:

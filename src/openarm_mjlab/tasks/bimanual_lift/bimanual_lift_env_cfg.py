@@ -112,26 +112,10 @@ from ...robot_bimanual import (
 from . import mdp as bl_mdp
 
 
-# 2026-08-23 fix: the
-# module docstring below in get_bimanual_lift_robot_cfg used to explain,
-# honestly, why init_state stayed the plain HOME_KEYFRAME -- no verified
-# two-arm IK pose existed yet. an earlier attempt later solved and verified
-# one (bl_mdp.HELD_HIGH_RIGHT_Q/LEFT_Q, error 0.046mm), but only ever
-# used it inside the reset_bar_held_high EVENT, never as the entity's
-# actual default pose -- so JointPositionAction's use_default_offset
-# (snapshotted ONCE at build time from entity.data.default_joint_pos,
-# see mjlab/envs/mdp/actions/actions.py) stayed anchored to
-# HOME_KEYFRAME regardless of what any reset event wrote into the sim. A
-# direct zero-action probe confirmed this: a held-high reset gets yanked
-# back toward HOME_KEYFRAME and the bar drops from 100mm to 30mm within
-# 9 steps (~180ms) -- the same "zero action yanks the arm home" bug
-# lift's own review #3 found and fixed via LIFT_HOME. This mirrors that
-# exact fix: BIMANUAL_LIFT_HOME uses the already-solved, already-
-# verified held-high joint values as the DEFAULT pose for both arms (and
-# starts both fingers near their squeeze targets, matching LIFT_HOME's
-# own "-0.25, already near-closed" convention), so zero action holds the
-# arm right where a genuine grip-and-lift needs it, exactly like lift's
-# LIFT_HOME == HELD_HIGH_POSE trick.
+# Use the held-high reference as the default action offset so zero arm
+# action maintains the curriculum grasp. The held-high reset restores these
+# joints after reset jitter and places the bar at the matching pose.
+# Both joints of each finger pair start at the same squeeze width.
 BIMANUAL_LIFT_HOME = EntityCfg.InitialStateCfg(
     pos=(0.0, 0.0, 0.0),
     joint_pos={
@@ -143,6 +127,7 @@ BIMANUAL_LIFT_HOME = EntityCfg.InitialStateCfg(
         "openarm_right_joint6": bl_mdp.HELD_HIGH_RIGHT_Q[5],
         "openarm_right_joint7": bl_mdp.HELD_HIGH_RIGHT_Q[6],
         "openarm_right_finger_joint1": bl_mdp.RIGHT_FINGER_SQUEEZE,
+        "openarm_right_finger_joint2": bl_mdp.RIGHT_FINGER_SQUEEZE,
         "openarm_left_joint1": bl_mdp.HELD_HIGH_LEFT_Q[0],
         "openarm_left_joint2": bl_mdp.HELD_HIGH_LEFT_Q[1],
         "openarm_left_joint3": bl_mdp.HELD_HIGH_LEFT_Q[2],
@@ -151,6 +136,7 @@ BIMANUAL_LIFT_HOME = EntityCfg.InitialStateCfg(
         "openarm_left_joint6": bl_mdp.HELD_HIGH_LEFT_Q[5],
         "openarm_left_joint7": bl_mdp.HELD_HIGH_LEFT_Q[6],
         "openarm_left_finger_joint1": bl_mdp.LEFT_FINGER_SQUEEZE,
+        "openarm_left_finger_joint2": bl_mdp.LEFT_FINGER_SQUEEZE,
     },
     joint_vel={".*": 0.0},
 )
@@ -184,17 +170,8 @@ def get_bimanual_lift_spec() -> mujoco.MjSpec:
 def get_bimanual_lift_robot_cfg():
     """Entity config for the bimanual arms in this task."""
     cfg = get_bimanual_robot_cfg()
-    # 2026-08-23: init_state now BIMANUAL_LIFT_HOME (see its docstring
-    # above for the full root-cause diagnosis and fix rationale) -- was
-    # the plain HOME_KEYFRAME through an earlier attempt, which is what
-    # caused the held-high curriculum's own yank-back bug. Both arms'
-    # "reach" is correspondingly easier now (hovering near the grip point,
-    # not the far neutral pose), same trade lift's own LIFT_HOME already
-    # made and shipped successfully -- reach_right/reach_left still have a
-    # real, non-trivial gap to close (the bar sits below/at table height,
-    # the default pose hovers HELD_HIGH_RAISE above that), so this is not
-    # a "reach already solved for free" shortcut, just the same default-
-    # offset anchor lift itself uses.
+    # Keep the position action's default offset aligned with held-high resets.
+    # Ordinary episodes still need to reach down to the bar on the table.
     cfg.init_state = BIMANUAL_LIFT_HOME
     cfg.spec_fn = get_bimanual_lift_spec
     actuators = (
@@ -227,19 +204,13 @@ def get_bimanual_lift_robot_cfg():
             damping=2.0,
             effort_limit=7.0,
         ),
-        # Left finger's OWN XML actuatorfrcrange is "-10 10"
-        # (openarm_v20_bimanual.xml:238) -- NOT symmetric with the right
-        # finger's 7 Nm (a quirk of the upstream model, confirmed by reading
-        # the XML directly, not assumed). Reading each joint's own designed
-        # capacity rather than assuming left/right symmetry is exactly the
-        # an earlier attempt lesson ("30 Nm was never this joint's real designed
-        # capacity, just a borrowed number") applied to a joint that has
-        # never been under effort control before this task.
+        # Match the right finger's 7 Nm cap so squeeze commands saturate
+        # symmetrically, overriding the upstream left actuator's 10 Nm limit.
         IdealPdActuatorCfg(
             target_names_expr=("openarm_left_finger_joint1",),
             stiffness=0.0,
             damping=2.0,
-            effort_limit=10.0,
+            effort_limit=7.0,
         ),
     )
     cfg.articulation = EntityArticulationInfoCfg(
@@ -531,16 +502,9 @@ def openarm_bimanual_lift_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="reset",
             params={"asset_cfg": BAR_CFG, "xy_range": 0.03},
         ),
-        # Must run after reset_bar (overrides the subset it picks) --
-        # An earlier attempt showed that neither individual nor together lift
-        # rewards ever fired even once in 3000 iterations from a cold
-        # start. Rewritten 2026-08-23 to drop the arm-joint teleport/anneal
-        # entirely now that BIMANUAL_LIFT_HOME (above) IS the held-high
-        # pose -- see mdp.py's HELD_HIGH_PROBABILITY docstring for the
-        # yank-back bug this fixes and reset_bar_held_high's own docstring
-        # for why only the bar needs moving now, exactly mirroring lift's
-        # own reset_held_high. probability left at its default (0.15,
-        # lift's own proven ratio) rather than passed explicitly here.
+        # Run after both ordinary resets: selected episodes restore the
+        # reference arm/finger joints without jitter and align the raised bar.
+        # The remaining episodes retain the ordinary reset randomization.
         "reset_bar_held_high": EventTermCfg(
             func=bl_mdp.reset_bar_held_high,
             mode="reset",
