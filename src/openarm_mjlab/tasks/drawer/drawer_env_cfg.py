@@ -532,13 +532,15 @@ def openarm_drawer_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # MuJoCo tracking cameras follow the tracked body's subtree COM
         # (here the whole right arm), so offscreen-rendered videos sway
         # with every arm motion. mjlab's interactive viewer works around
-        # that, so the artifact only shows up in recorded video.
+        # that, so the artifact only shows up in recorded video. Viewed from
+        # the robot's right side: the drawer slides out along -x toward the
+        # robot, so a camera behind the cabinet hides the drawer front.
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.WORLD,
-            lookat=(0.45, -0.22, 0.52),
-            distance=1.8,
-            elevation=-15.0,
-            azimuth=160.0,
+            lookat=(0.38, -0.26, 0.52),
+            distance=0.9,
+            elevation=-20.0,
+            azimuth=80.0,
         ),
         sim=SimulationCfg(
             nconmax=150,
