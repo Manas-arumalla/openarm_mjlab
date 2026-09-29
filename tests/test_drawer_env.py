@@ -142,25 +142,39 @@ def test_spawn_manifold_does_not_touch_the_cabinet(env):
             )
 
 
-def test_success_rejects_a_drawer_that_was_yanked(env):
-    """Success must fail if the drawer exceeded the peak speed at any point this episode."""
+def test_success_rejects_a_drawer_that_was_yanked(env, monkeypatch):
+    """Success must fail if the drawer exceeded the peak speed at any point this episode.
+
+    Every other success condition is forced true, so the peak speed alone decides.
+    """
+    from openarm_mjlab.tasks.drawer import mdp as drawer_mdp
     from openarm_mjlab.tasks.drawer.drawer_env_cfg import (
         CABINET_JOINT_CFG,
         PEAK_PULL_SPEED,
     )
-    from openarm_mjlab.tasks.drawer.mdp import _peak_speed, drawer_held_fully_open
 
     env.reset()
-    _peak_speed(env)[:] = PEAK_PULL_SPEED + 0.1
-    success = drawer_held_fully_open(
-        env,
-        sensor_name="finger_handle_contact",
-        threshold=0.0,
-        max_speed=float("inf"),
-        peak_speed=PEAK_PULL_SPEED,
-        asset_cfg=CABINET_JOINT_CFG,
+    monkeypatch.setattr(
+        drawer_mdp,
+        "fingers_on_handle",
+        lambda env, sensor_name: torch.ones(env.num_envs, dtype=torch.bool),
     )
-    assert not success.any()
+    env._drawer_gained_contact[:] = 1.0
+
+    def success():
+        return drawer_mdp.drawer_held_fully_open(
+            env,
+            sensor_name="finger_handle_contact",
+            threshold=-1.0,
+            max_speed=float("inf"),
+            peak_speed=PEAK_PULL_SPEED,
+            asset_cfg=CABINET_JOINT_CFG,
+        )
+
+    drawer_mdp._peak_speed(env)[:] = 0.0
+    assert success().all()
+    drawer_mdp._peak_speed(env)[:] = PEAK_PULL_SPEED + 0.1
+    assert not success().any()
 
 
 def test_frontal_grasp_scores_the_spawn_grasp_as_aligned(env):
