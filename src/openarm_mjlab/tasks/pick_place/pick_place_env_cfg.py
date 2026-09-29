@@ -14,33 +14,35 @@
 
 """Environment configuration for the OpenArm pick & place task."""
 
+import dataclasses
 import math
 
 import mujoco
 
-from mjlab.entity import EntityCfg
+from mjlab.actuator import IdealPdActuatorCfg, XmlActuatorCfg
+from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp
 from mjlab.envs.mdp import dr
-from mjlab.envs.mdp.actions import JointPositionActionCfg
+from mjlab.envs.mdp.actions import JointEffortActionCfg, JointPositionActionCfg
 from mjlab.managers.action_manager import ActionTermCfg
-from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from ...openarm_cell import (
-    LEFT_FINGER_HOME,
     LEFT_FINGERTIP_GEOMS,
     LEFT_GRASP_SITE,
     TABLE_TOP_Z,
+    get_openarm_cell_spec,
     get_openarm_robot_cfg,
 )
 from . import mdp as pick_mdp
@@ -89,6 +91,24 @@ SETTLE_MAX_ANG_SPEED = 1.0
 # reach/observation terms target where a grasped cube sits, not the wrist.
 EE_SITE = LEFT_GRASP_SITE
 
+# Per-pad contact between the left fingers and the cube; the pinch-gated
+# rewards and observation read it as (inner, outer) pad contact.
+FINGER_CUBE_SENSOR = ContactSensorCfg(
+    name="finger_cube_contact",
+    primary=ContactMatch(
+        mode="body",
+        pattern=r"openarm_left_ee_(inner|outer)_finger",
+        entity="robot",
+    ),
+    secondary=ContactMatch(mode="geom", pattern="cube_geom", entity="cube"),
+    fields=("found",),
+    reduce="none",
+    num_slots=1,
+)
+_PINCH = {"sensor_name": FINGER_CUBE_SENSOR.name}
+# Carried = pinched with the cube center at TRANSPORT_MIN_Z, clear of the walls.
+_CARRIED = {"carry_min_height": TRANSPORT_MIN_Z, **_PINCH}
+
 
 def get_cube_spec() -> mujoco.MjSpec:
     """Orange cube identical to demo.xml."""
@@ -132,6 +152,65 @@ def get_tray_spec() -> mujoco.MjSpec:
     return spec
 
 
+LEFT_FINGER_JOINT = "openarm_left_finger_joint1"
+# The asset's own finger servo cap (left_finger1_ctrl forcerange).
+FINGER_EFFORT_LIMIT = 7.0
+# Same as the Lift task's squeeze: a one-sigma exploration action is 2 N*m.
+SQUEEZE_SCALE = 2.0
+# Episodes start with the jaw just wider than the cube, like the Lift task's
+# home. Both pads first touch the 4 cm cube at 0.17-0.20 rad across yaws
+# (measured), so 0.30 still straddles it; from the fully open 0.785 the
+# asset's finger damping (~0.5 rad/s at 2 N*m) kept zero-mean exploration
+# from ever reaching the cube.
+FINGER_START = 0.30
+
+
+def get_pick_place_spec() -> mujoco.MjSpec:
+    """Return the Cell spec without the left finger's XML position servo.
+
+    mjlab keeps XML actuators no actuator config claims, so the servo would
+    otherwise keep pulling the jaw toward its target against the squeeze.
+    """
+    spec = get_openarm_cell_spec()
+    spec.delete(spec.actuator("left_finger1_ctrl"))
+    return spec
+
+
+def get_pick_place_robot_cfg() -> EntityCfg:
+    """Return the Cell robot with an effort-driven left finger, as in the Lift task.
+
+    Under position control the finger target is home (open) plus the action,
+    so zero-mean exploration keeps the jaw open on average and closing needs
+    a sustained action below -0.8: trained policies never closed on the cube.
+    A torque command instead integrates, so exploration regularly drives the
+    jaw to its closed stop, and the policy sets the squeeze force directly.
+    """
+    cfg = get_openarm_robot_cfg()
+    cfg.spec_fn = get_pick_place_spec
+    cfg.init_state = dataclasses.replace(
+        cfg.init_state,
+        joint_pos={
+            **cfg.init_state.joint_pos,
+            "openarm_left_finger_joint1": FINGER_START,
+            "openarm_left_finger_joint2": FINGER_START,
+        },
+    )
+    cfg.articulation = EntityArticulationInfoCfg(
+        actuators=(
+            XmlActuatorCfg(target_names_expr=("openarm_left_joint[1-7]",)),
+            IdealPdActuatorCfg(
+                target_names_expr=(LEFT_FINGER_JOINT,),
+                stiffness=0.0,
+                # The removed servo's kv; the joint keeps its own damping too.
+                damping=0.2,
+                effort_limit=FINGER_EFFORT_LIMIT,
+            ),
+        ),
+        soft_joint_pos_limit_factor=0.9,
+    )
+    return cfg
+
+
 def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Build the OpenArm pick & place environment config."""
     actor_terms = {
@@ -160,6 +239,7 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
             noise=Unoise(n_min=-0.01, n_max=0.01),
         ),
+        "pinch": ObservationTermCfg(func=pick_mdp.pinch_obs, params=_PINCH),
         "actions": ObservationTermCfg(func=mdp.last_action),
     }
     critic_terms = {**actor_terms}
@@ -172,22 +252,17 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     actions: dict[str, ActionTermCfg] = {
         "joint_pos": JointPositionActionCfg(
             entity_name="robot",
-            actuator_names=(
-                "openarm_left_joint[1-7]",
-                "openarm_left_finger_joint1",
-            ),
-            # use_default_offset puts each offset at the home pose, and the
-            # asset's home jaw is fully OPEN at the top of the finger range.
-            # A finger action therefore only has room to close, so its scale
-            # spans the whole range: action -1 shuts the jaw, 0 holds it open.
-            # A smaller scale cannot reach a grasp at all — the 4 cm cube needs
-            # the jaw below ~0.16 rad, which 0.4 never reaches from 0.7854.
-            scale={
-                "openarm_left_joint[1-7]": 0.5,
-                "openarm_left_finger_joint1": LEFT_FINGER_HOME,
-            },
+            actuator_names=("openarm_left_joint[1-7]",),
+            scale=0.5,
             use_default_offset=True,
-        )
+        ),
+        # Negative squeezes the jaw shut, positive opens it (see
+        # get_pick_place_robot_cfg for why the finger is effort-driven).
+        "squeeze": JointEffortActionCfg(
+            entity_name="robot",
+            actuator_names=(LEFT_FINGER_JOINT,),
+            scale=SQUEEZE_SCALE,
+        ),
     }
 
     events = {
@@ -215,6 +290,10 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("cube"),
             },
         ),
+        "reset_pinch_streak": EventTermCfg(
+            func=pick_mdp.reset_pinch_streak, mode="reset"
+        ),
+        "reset_carried": EventTermCfg(func=pick_mdp.reset_carried, mode="reset"),
         "fingertip_friction_slide": EventTermCfg(
             mode="startup",
             func=dr.geom_friction,
@@ -251,19 +330,35 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     rewards = {
-        "reach": RewardTermCfg(
-            func=pick_mdp.object_reach_reward,
+        # mjlab lift_cube's staged reward: reaching * (1 + bringing). Reach
+        # alone saturates once the jaws surround the cube; bringing keeps a
+        # gradient toward the hover target (so upward too) while the gripper
+        # stays on the cube, instead of paying nothing until LIFT_MIN_Z.
+        "reach_bring": RewardTermCfg(
+            func=pick_mdp.staged_reach_bring_reward,
             weight=1.0,
             params={
                 "object_name": "cube",
-                "std": 0.2,
+                "target_name": "tray",
+                "reaching_std": 0.2,
+                "bringing_std": 0.3,
                 "asset_cfg": SceneEntityCfg("robot", site_names=(EE_SITE,)),
+                "target_offset": TRAY_TARGET_OFFSET,
             },
+        ),
+        # Grasp shaping, as in the Lift task: two-pad pinch, one-pad partial
+        # credit, and a streak that pays for holding rather than pecking.
+        "pinch": RewardTermCfg(func=pick_mdp.pinch_reward, weight=0.5, params=_PINCH),
+        "partial_pinch": RewardTermCfg(
+            func=pick_mdp.partial_pinch_reward, weight=0.3, params=_PINCH
+        ),
+        "pinch_streak": RewardTermCfg(
+            func=pick_mdp.pinch_streak_reward, weight=1.5, params=_PINCH
         ),
         "lift": RewardTermCfg(
             func=pick_mdp.object_lifted,
             weight=1.0,
-            params={"object_name": "cube", "minimum_height": LIFT_MIN_Z},
+            params={"object_name": "cube", "minimum_height": LIFT_MIN_Z, **_PINCH},
         ),
         # Weight/std chosen so carrying spawn->tray gains ~+0.9/step over holding
         # in place (the reach+lift baseline is 2.0/step); at 1.0/0.3 the gain was
@@ -279,6 +374,9 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "target_offset": TRAY_TARGET_OFFSET,
             },
         ),
+        # Place and success both require the cube to have been carried (pinched
+        # above the tray walls) this episode: a trained policy otherwise
+        # shoved it into the tray without ever grasping it.
         "place": RewardTermCfg(
             func=pick_mdp.object_in_tray,
             weight=2.0,
@@ -287,11 +385,13 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "tray_name": "tray",
                 "xy_tolerance": TRAY_XY_TOL,
                 "max_height_above_tray": TRAY_MAX_HEIGHT,
+                **_CARRIED,
             },
         ),
         # Terminal bonus (eff. 20 after dt scaling: 1000 * step_dt 0.02) must
-        # exceed the discounted return of hovering in-tray without settling
-        # (~5.9 raw/step * 0.02 * gamma/(1-gamma) ~= 11.7 at gamma=0.99), or the
+        # exceed the discounted return of hovering pinched in-tray without
+        # settling (reach_bring ~1.96 + pinch terms 2.3 + place 2 + lift 1 =
+        # ~7.3 raw/step * 0.02 * gamma/(1-gamma) ~= 14.5 at gamma=0.99), or the
         # policy learns to stall just above the success thresholds forever.
         "success_bonus": RewardTermCfg(
             func=pick_mdp.terminated_by,
@@ -344,20 +444,7 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "max_height_above_tray": SUCCESS_MAX_HEIGHT,
                 "max_speed": SETTLE_MAX_SPEED,
                 "max_ang_speed": SETTLE_MAX_ANG_SPEED,
-            },
-        ),
-    }
-
-    curriculum = {
-        "joint_vel_hinge_weight": CurriculumTermCfg(
-            func=manipulation_mdp.reward_curriculum,
-            params={
-                "reward_name": "joint_vel_hinge",
-                "stages": [
-                    {"step": 0, "weight": -0.01},
-                    {"step": 500 * 24, "weight": -0.1},
-                    {"step": 1000 * 24, "weight": -1.0},
-                ],
+                **_CARRIED,
             },
         ),
     }
@@ -366,8 +453,9 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         scene=SceneCfg(
             num_envs=1,
             env_spacing=1.0,
+            sensors=(FINGER_CUBE_SENSOR,),
             entities={
-                "robot": get_openarm_robot_cfg(),
+                "robot": get_pick_place_robot_cfg(),
                 "cube": EntityCfg(
                     init_state=EntityCfg.InitialStateCfg(pos=CUBE_SPAWN_POS),
                     spec_fn=get_cube_spec,
@@ -383,7 +471,6 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         events=events,
         rewards=rewards,
         terminations=terminations,
-        curriculum=curriculum,
         viewer=ViewerConfig(
             # Fixed view matching cell.xml's camera_head_right: above the arm
             # bases, looking forward-down (+x) at the table workspace.
@@ -412,6 +499,5 @@ def openarm_pick_place_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if play:
         cfg.episode_length_s = int(1e9)
         cfg.observations["actor"].enable_corruption = False
-        cfg.curriculum = {}
 
     return cfg
