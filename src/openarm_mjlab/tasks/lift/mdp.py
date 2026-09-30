@@ -164,6 +164,13 @@ HELD_HIGH_POSE = {
 HELD_HIGH_TOOL_Z = 0.51
 
 
+# Finger joint for the held start (0 is closed, -0.785 fully open). -0.22 pressed
+# both pads 7 mm into the block. At -0.39 both pads touch it, less than 1 mm in
+# (inner 0.96, outer 0.24), so the episode starts in a grip without starting
+# inside the block; the policy has to clamp.
+HELD_FINGER_POS = -0.39
+
+
 def reset_held_high(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -185,13 +192,15 @@ def reset_held_high(
     ids = env_ids[pick]
     if len(ids) == 0:
         return
-    # Arm is already at the held-high DEFAULT (reset_robot_joints jitters
-    # around it); only pin the fingers to block width and place the block.
-    jp = robot.data.joint_pos[ids].clone()
+    # Start from the held-high DEFAULT without reset_robot_joints' jitter: the
+    # block goes to a fixed point, and a jittered arm moves the hand up to
+    # ~25 mm off it, putting parts of the hand inside the block. Fingers at
+    # HELD_FINGER_POS put both pads on the block.
+    jp = robot.data.default_joint_pos[ids].clone()
     jv = torch.zeros_like(robot.data.joint_vel[ids])
     for j, name in enumerate(robot.joint_names):
         if "right_finger" in name:
-            jp[:, j] = -0.22
+            jp[:, j] = HELD_FINGER_POS
     robot.write_joint_state_to_sim(jp, jv, env_ids=ids)
     state = block.data.default_root_state[ids].clone()
     state[:, 0] = 0.30

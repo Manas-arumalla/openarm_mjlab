@@ -270,7 +270,10 @@ def openarm_lift_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=base_mdp.reset_joints_by_offset,
             mode="reset",
             params={
-                "position_range": (-0.05, 0.05),
+                # The home pose holds the hand about 8 mm above the block on the
+                # table: +-0.05 rad started 9.6% of resets with the hand inside
+                # it (up to 15 mm), +-0.02 rad 0.1%.
+                "position_range": (-0.02, 0.02),
                 "velocity_range": (0.0, 0.0),
                 "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
             },
