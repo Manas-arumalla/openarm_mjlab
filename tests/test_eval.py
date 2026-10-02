@@ -56,3 +56,18 @@ def test_ambiguous_selection_raises_rather_than_guessing():
 def test_no_candidate_raises():
     with pytest.raises(SystemExit, match="Could not infer"):
         resolve_success_term(["time_out", "nan_detection"], None)
+
+
+def test_every_registered_task_has_one_inferable_success_term():
+    """Every task must work without --success-term: exactly one candidate left."""
+    import openarm_mjlab.tasks  # noqa: F401  (registers the tasks)
+    from mjlab.tasks.registry import list_tasks, load_env_cfg
+
+    from openarm_mjlab.eval import NON_SUCCESS_TERMS
+
+    tasks = sorted(t for t in list_tasks() if t.startswith("OpenArm-"))
+    assert tasks
+    for task in tasks:
+        terms = list(load_env_cfg(task).terminations)
+        chosen = resolve_success_term(terms, None)
+        assert chosen not in NON_SUCCESS_TERMS, (task, chosen)

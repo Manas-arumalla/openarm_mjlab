@@ -64,6 +64,7 @@ NON_SUCCESS_TERMS = frozenset(
         "time_out",
         "nan_detection",
         "cube_dropped",
+        "block_fell",
         "puck_fell",
         "bar_fell",
         "object_dropped",
