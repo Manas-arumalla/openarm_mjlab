@@ -48,6 +48,32 @@ from . import mdp as puck_mdp
 
 PUCK_START = (0.20, -0.14, 0.422)
 
+# The shared home holds the right forearm level just above the table, and the
+# puck starts under the wrist: at the home pose link6 is 4 mm inside the puck in
+# every reset, and the +-0.05 rad joint noise takes it up to 25 mm deep (about
+# two resets in three start overlapped). Raising the right elbow from 90 to
+# 101.4 deg tilts the forearm up; measured over 2048 resets with the same noise,
+# none start in contact with the puck or the table, and the hand still starts
+# over the puck, 4 cm higher.
+PUCK_HOME = EntityCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.0),
+    joint_pos={
+        "openarm_right_joint4": 1.77,
+        "openarm_left_joint4": 1.5708,
+        "openarm_(left|right)_joint[12356]": 0.0,
+        "openarm_(left|right)_joint7": 0.0,
+        "openarm_(left|right)_finger_joint[12]": 0.0,
+    },
+    joint_vel={".*": 0.0},
+)
+
+
+def get_puck_robot_cfg() -> EntityCfg:
+    """Return the bimanual robot config, homed clear of the puck."""
+    cfg = get_bimanual_robot_cfg()
+    cfg.init_state = PUCK_HOME
+    return cfg
+
 
 def get_table_spec() -> mujoco.MjSpec:
     """Build the static table slab + goal disc marker spec."""
@@ -304,7 +330,7 @@ def openarm_puck_env_cfg(
         scene=SceneCfg(
             terrain=TerrainEntityCfg(terrain_type="plane"),
             entities={
-                "robot": get_bimanual_robot_cfg(),
+                "robot": get_puck_robot_cfg(),
                 "table": EntityCfg(spec_fn=get_table_spec),
                 "puck": EntityCfg(
                     spec_fn=get_puck_spec,
